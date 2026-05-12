@@ -1,12 +1,13 @@
 import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type {
   WorkspaceAuditEvent,
   WorkspaceDescriptor,
   WorkspaceDiffLine,
   WorkspaceFileRead,
+  WorkspacePatchApplyResult,
   WorkspacePatchPreview,
   WorkspaceSearchMatch,
   WorkspaceSearchResult,
@@ -17,6 +18,7 @@ const DEFAULT_EXCLUDED_NAMES = new Set([".git", "node_modules", "dist", ".logs",
 const SENSITIVE_FILE_NAMES = new Set([".env", ".env.local", ".env.production", ".env.development"]);
 const MAX_READ_BYTES = 256 * 1024;
 const MAX_PATCH_PREVIEW_BYTES = MAX_READ_BYTES;
+const MAX_PATCH_APPLY_BYTES = MAX_READ_BYTES;
 const MAX_SEARCH_FILE_BYTES = 1024 * 1024;
 const MAX_TREE_DEPTH = 6;
 const MAX_TREE_ENTRIES = 600;
@@ -73,6 +75,7 @@ const isPathLikeInputSafe = (input: string) => {
 };
 
 const clampInteger = (value: number, min: number, max: number) => Math.min(max, Math.max(min, Math.floor(value)));
+const contentHash = (content: string) => createHash("sha256").update(content, "utf8").digest("hex");
 
 async function realDirectory(input: string) {
   const absolute = path.resolve(input);
@@ -375,6 +378,7 @@ export class WorkspaceService {
       return {
         workspaceId: workspace.id,
         path: portablePath,
+        baseHash: contentHash(originalContent),
         originalSize: stat.size,
         updatedSize,
         changed: originalContent !== newContent,
@@ -383,6 +387,72 @@ export class WorkspaceService {
       };
     } catch (error) {
       this.audit(workspace, "preview_patch", "denied", safeInputTarget(relativePath), error instanceof Error ? error.message : "Unknown error.");
+      throw error;
+    }
+  }
+
+  async applyPatch(
+    workspaceId: string,
+    relativePath: string,
+    newContent: string,
+    expectedHash: string
+  ): Promise<WorkspacePatchApplyResult> {
+    const workspace = this.requireWorkspace(workspaceId);
+    try {
+      const cleanExpectedHash = expectedHash.trim().toLowerCase();
+      if (!/^[a-f0-9]{64}$/.test(cleanExpectedHash)) {
+        throw new WorkspaceError("patch_hash_invalid", "Patch apply requires a valid base hash.");
+      }
+      if (newContent.includes("\0")) {
+        throw new WorkspaceError("patch_content_binary", "Patch apply content must be text.", 415);
+      }
+
+      const nextSize = Buffer.byteLength(newContent, "utf8");
+      if (nextSize > MAX_PATCH_APPLY_BYTES) {
+        throw new WorkspaceError("patch_apply_too_large", `Patch apply exceeds limit of ${MAX_PATCH_APPLY_BYTES} bytes.`, 413);
+      }
+
+      const filePath = await this.resolveInsideWorkspace(workspace, relativePath, "file");
+      const stat = await fs.stat(filePath);
+      if (stat.size > MAX_READ_BYTES) {
+        throw new WorkspaceError("file_too_large", `File exceeds read limit of ${MAX_READ_BYTES} bytes.`, 413);
+      }
+      if (await isBinaryFile(filePath)) {
+        throw new WorkspaceError("binary_file_not_writable", "Binary files cannot be patched as text.", 415);
+      }
+
+      const currentContent = await fs.readFile(filePath, "utf8");
+      const previousHash = contentHash(currentContent);
+      const portablePath = toPortableRelativePath(workspace.root, filePath);
+      if (previousHash !== cleanExpectedHash) {
+        throw new WorkspaceError("patch_conflict", "File changed since preview; refresh the diff before applying.", 409);
+      }
+
+      const nextHash = contentHash(newContent);
+      const changed = currentContent !== newContent;
+      if (changed) {
+        await fs.writeFile(filePath, newContent, "utf8");
+      }
+
+      this.audit(
+        workspace,
+        "apply_patch",
+        "allowed",
+        portablePath,
+        changed ? `Applied patch; wrote ${nextSize} byte(s).` : "Skipped apply because content was unchanged."
+      );
+      return {
+        workspaceId: workspace.id,
+        path: portablePath,
+        appliedAt: new Date().toISOString(),
+        previousHash,
+        nextHash,
+        previousSize: stat.size,
+        nextSize,
+        changed
+      };
+    } catch (error) {
+      this.audit(workspace, "apply_patch", "denied", safeInputTarget(relativePath), error instanceof Error ? error.message : "Unknown error.");
       throw error;
     }
   }

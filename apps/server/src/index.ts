@@ -43,6 +43,10 @@ type WorkspacePatchPreviewBody = {
   newContent?: string;
 };
 
+type WorkspacePatchApplyBody = WorkspacePatchPreviewBody & {
+  expectedHash?: string;
+};
+
 function sendWorkspaceError(reply: { code(statusCode: number): { send(payload: unknown): unknown } }, error: unknown) {
   if (error instanceof WorkspaceError) {
     return reply.code(error.statusCode).send({
@@ -211,6 +215,50 @@ app.post<{ Params: WorkspaceParams; Body: WorkspacePatchPreviewBody }>(
 
     try {
       return await workspaceService.previewPatch(request.params.workspaceId, request.body.path, request.body.newContent);
+    } catch (error) {
+      return sendWorkspaceError(reply, error);
+    }
+  }
+);
+
+app.post<{ Params: WorkspaceParams; Body: WorkspacePatchApplyBody }>(
+  "/api/workspaces/:workspaceId/patches/apply",
+  { bodyLimit: patchPreviewBodyLimit },
+  async (request, reply) => {
+    if (!request.body?.path?.trim()) {
+      return reply.code(400).send({
+        error: {
+          code: "file_path_required",
+          message: "file path is required"
+        }
+      });
+    }
+
+    if (typeof request.body.newContent !== "string") {
+      return reply.code(400).send({
+        error: {
+          code: "patch_content_required",
+          message: "patch apply content is required"
+        }
+      });
+    }
+
+    if (typeof request.body.expectedHash !== "string" || !request.body.expectedHash.trim()) {
+      return reply.code(400).send({
+        error: {
+          code: "patch_hash_required",
+          message: "patch apply base hash is required"
+        }
+      });
+    }
+
+    try {
+      return await workspaceService.applyPatch(
+        request.params.workspaceId,
+        request.body.path,
+        request.body.newContent,
+        request.body.expectedHash
+      );
     } catch (error) {
       return sendWorkspaceError(reply, error);
     }

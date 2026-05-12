@@ -148,7 +148,7 @@ export type WorkspaceAuditEvent = {
   id: string;
   at: string;
   workspaceId: string;
-  action: "register_workspace" | "file_tree" | "read_file" | "search_workspace" | "preview_patch";
+  action: "register_workspace" | "file_tree" | "read_file" | "search_workspace" | "preview_patch" | "apply_patch";
   status: "allowed" | "denied" | "error";
   target?: string;
   detail: string;
@@ -183,11 +183,23 @@ export type WorkspaceDiffLine = {
 export type WorkspacePatchPreview = {
   workspaceId: string;
   path: string;
+  baseHash: string;
   originalSize: number;
   updatedSize: number;
   changed: boolean;
   truncated: boolean;
   diff: WorkspaceDiffLine[];
+};
+
+export type WorkspacePatchApplyResult = {
+  workspaceId: string;
+  path: string;
+  appliedAt: string;
+  previousHash: string;
+  nextHash: string;
+  previousSize: number;
+  nextSize: number;
+  changed: boolean;
 };
 
 export const modelKey = (model: Pick<ModelDescriptor, "provider" | "id">) => `${model.provider}:${model.id}`;
