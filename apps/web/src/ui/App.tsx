@@ -23,8 +23,11 @@ import {
 } from "lucide-react";
 import type {
   ModelDescriptor,
+  ModelRunResult,
   OrchestrationMode,
   RunRequest,
+  RunResult,
+  RunStreamEvent,
   WorkspaceAuditEvent,
   WorkspaceDescriptor,
   WorkspaceFileRead,
@@ -35,7 +38,6 @@ import type {
 import { modelKey } from "@webcode/core";
 import {
   applyWorkspacePatch,
-  createRun,
   loadBootstrap,
   loadWorkspaceAudit,
   loadWorkspaceTree,
@@ -43,7 +45,8 @@ import {
   previewWorkspacePatch,
   readWorkspaceFile,
   registerWorkspace,
-  searchWorkspace
+  searchWorkspace,
+  streamRun
 } from "./api";
 import type { BootstrapPayload, ProviderPayload, UiRunState } from "./types";
 
@@ -183,6 +186,97 @@ function TreeNode({
   );
 }
 
+function streamingFinal(responses: ModelRunResult[]) {
+  if (!responses.length) return "正在连接模型流...";
+
+  return responses
+    .map((response) => {
+      const title = `${response.provider}/${response.model} (${response.role})`;
+      const body = response.text.trim() || (response.ok ? "正在生成..." : response.error ?? "模型没有返回内容");
+      return `${title}\n${body}`;
+    })
+    .join("\n\n");
+}
+
+function withStreamingFinal(run: RunResult): RunResult {
+  return {
+    ...run,
+    final: streamingFinal(run.responses)
+  };
+}
+
+function replaceResponse(responses: ModelRunResult[], replacement: ModelRunResult) {
+  const index = responses.findIndex((response) => response.modelKey === replacement.modelKey);
+  if (index < 0) return [...responses, replacement];
+
+  const next = [...responses];
+  next[index] = replacement;
+  return next;
+}
+
+function applyRunStreamEvent(current: RunResult | undefined, event: RunStreamEvent): RunResult | undefined {
+  if (event.type === "run_started") {
+    return {
+      id: event.runId,
+      mode: event.mode,
+      startedAt: event.at,
+      completedAt: event.at,
+      selectedModels: event.selectedModels,
+      final: "正在连接模型流...",
+      responses: [],
+      audit: event.audit
+    };
+  }
+
+  if (!current) return undefined;
+
+  if (event.type === "model_started") {
+    if (current.responses.some((response) => response.modelKey === event.modelKey)) return current;
+
+    return withStreamingFinal({
+      ...current,
+      completedAt: event.at,
+      responses: [
+        ...current.responses,
+        {
+          modelKey: event.modelKey,
+          provider: event.provider,
+          model: event.model,
+          role: event.role,
+          ok: true,
+          text: ""
+        }
+      ]
+    });
+  }
+
+  if (event.type === "model_event") {
+    return withStreamingFinal({
+      ...current,
+      completedAt: event.at,
+      responses: current.responses.map((response) => {
+        if (response.modelKey !== event.modelKey) return response;
+        if (event.event.type === "message_delta") return { ...response, text: response.text + event.event.text };
+        if (event.event.type === "usage") return { ...response, usage: event.event.usage };
+        if (event.event.type === "error") return { ...response, ok: false, error: event.event.message };
+        return response;
+      })
+    });
+  }
+
+  if (event.type === "model_done") {
+    return withStreamingFinal({
+      ...current,
+      completedAt: event.at,
+      responses: replaceResponse(current.responses, event.result)
+    });
+  }
+
+  if (event.type === "run_done") return event.run;
+
+  return current;
+}
+
 export function App() {
   const [bootstrap, setBootstrap] = useState<BootstrapPayload | null>(null);
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
@@ -210,6 +304,8 @@ export function App() {
   const patchDraftRef = useRef("");
   const patchPreviewRequestRef = useRef(0);
   const patchApplyRequestRef = useRef(0);
+  const runAbortRef = useRef<AbortController | null>(null);
+  const runRequestRef = useRef(0);
 
   useEffect(() => {
     loadBootstrap()
@@ -269,6 +365,8 @@ export function App() {
     patchDraftRef.current = patchDraft;
   }, [patchDraft]);
 
+  useEffect(() => () => runAbortRef.current?.abort(), []);
+
   const models = useMemo(() => flattenModels(bootstrap?.providers ?? []), [bootstrap]);
   const result = runState.result;
   const readyCount = models.filter((entry) => entry.model.available).length;
@@ -300,15 +398,37 @@ export function App() {
       selectedModels,
       maxOutputTokens: 1200
     };
+    const requestId = runRequestRef.current + 1;
+    runRequestRef.current = requestId;
+    runAbortRef.current?.abort();
+    const abortController = new AbortController();
+    runAbortRef.current = abortController;
     setRunState(result ? { status: "loading", result } : { status: "loading" });
     try {
-      setRunState({ status: "done", result: await createRun(request) });
+      const streamed = await streamRun(
+        request,
+        (event) => {
+          if (runRequestRef.current !== requestId) return;
+          setRunState((current) => {
+            const next = applyRunStreamEvent(current.result, event);
+            return next ? { status: "loading", result: next } : current;
+          });
+        },
+        abortController.signal
+      );
+      if (runRequestRef.current !== requestId) return;
+      setRunState({ status: "done", result: streamed });
     } catch (error) {
-      setRunState({
-        status: "error",
-        ...(result ? { result } : {}),
-        error: error instanceof Error ? error.message : "运行失败"
+      if (abortController.signal.aborted) return;
+      setRunState((current) => {
+        const fallbackResult = current.result ?? result;
+        const message = maskSensitiveText(error instanceof Error ? error.message : "运行失败");
+        return fallbackResult
+          ? { status: "error", result: fallbackResult, error: message }
+          : { status: "error", error: message };
       });
+    } finally {
+      if (runAbortRef.current === abortController) runAbortRef.current = null;
     }
   }
 

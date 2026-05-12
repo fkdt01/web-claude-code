@@ -1,4 +1,4 @@
-import type { RunRequest, RunResult } from "@webcode/core";
+import type { RunRequest, RunResult, RunStreamEvent } from "@webcode/core";
 import type {
   BootstrapPayload,
   WorkspaceAuditPayload,
@@ -10,20 +10,35 @@ import type {
   WorkspaceTreePayload
 } from "./types";
 
+async function readErrorMessage(response: Response, fallback: string) {
+  const text = await response.text();
+  let structuredMessage: string | undefined;
+  try {
+    const payload = JSON.parse(text) as { error?: { code?: string; message?: string } };
+    structuredMessage = payload.error?.message || payload.error?.code;
+  } catch {
+    // Fall through to the generic response below when the body is not JSON.
+  }
+  return structuredMessage || text || fallback;
+}
+
 async function parseJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
-    const text = await response.text();
-    let structuredMessage: string | undefined;
-    try {
-      const payload = JSON.parse(text) as { error?: { code?: string; message?: string } };
-      structuredMessage = payload.error?.message || payload.error?.code;
-    } catch {
-      // Fall through to the generic response below when the body is not JSON.
-    }
-    throw new Error(structuredMessage || text || `请求失败：${response.status}`);
+    throw new Error(await readErrorMessage(response, `请求失败：${response.status}`));
   }
 
   return response.json() as Promise<T>;
+}
+
+function parseSseEvent(frame: string): RunStreamEvent | null {
+  const data = frame
+    .split("\n")
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trimStart())
+    .join("\n");
+
+  if (!data) return null;
+  return JSON.parse(data) as RunStreamEvent;
 }
 
 export async function loadBootstrap() {
@@ -38,6 +53,74 @@ export async function createRun(request: RunRequest) {
       body: JSON.stringify(request)
     })
   );
+}
+
+export async function streamRun(
+  request: RunRequest,
+  onEvent: (event: RunStreamEvent) => void,
+  signal?: AbortSignal
+) {
+  const response = await fetch("/api/runs/stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    ...(signal ? { signal } : {}),
+    body: JSON.stringify(request)
+  });
+
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, `流式请求失败：${response.status}`));
+  }
+
+  if (!response.body) {
+    throw new Error("浏览器不支持流式响应");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finalRun: RunResult | undefined;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (value) {
+        buffer += decoder.decode(value, { stream: !done }).replace(/\r\n/g, "\n");
+      }
+
+      let boundary = buffer.indexOf("\n\n");
+      while (boundary >= 0) {
+        const frame = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        const event = parseSseEvent(frame);
+        if (event) {
+          onEvent(event);
+          if (event.type === "run_done") finalRun = event.run;
+          if (event.type === "error") throw new Error(event.message);
+        }
+        boundary = buffer.indexOf("\n\n");
+      }
+
+      if (done) break;
+    }
+
+    buffer += decoder.decode();
+    if (buffer.trim()) {
+      const event = parseSseEvent(buffer);
+      if (event) {
+        onEvent(event);
+        if (event.type === "run_done") finalRun = event.run;
+        if (event.type === "error") throw new Error(event.message);
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  if (!finalRun) {
+    throw new Error("流式运行没有返回最终结果");
+  }
+
+  return finalRun;
 }
 
 export async function loadWorkspaces() {
