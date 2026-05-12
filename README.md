@@ -12,6 +12,7 @@
 - `docs/project-breakdown.md`：对参考项目的模块拆解和 Web 化映射。
 - `docs/architecture.md`：完整产品架构、MVP 范围和路线图。
 - `docs/implementation-plan.md`：分阶段实施方案和风险清单。
+- `docs/automation-loop.md`：自动推进循环、代理职责和质量门禁。
 - `docs/linux-deploy.md`：Docker 与 systemd 部署说明。
 
 ## 本地运行
