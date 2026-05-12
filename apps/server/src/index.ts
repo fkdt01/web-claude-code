@@ -8,6 +8,7 @@ import { createWorkspaceService, WorkspaceError } from "./workspaces.js";
 
 const port = Number(process.env.PORT ?? 8787);
 const host = process.env.HOST ?? "0.0.0.0";
+const patchPreviewBodyLimit = 1024 * 1024;
 const providers = createProviderRegistry();
 const workspaceService = await createWorkspaceService();
 
@@ -35,6 +36,11 @@ type WorkspaceFileQuery = {
 type WorkspaceSearchQuery = {
   query?: string;
   limit?: string;
+};
+
+type WorkspacePatchPreviewBody = {
+  path?: string;
+  newContent?: string;
 };
 
 function sendWorkspaceError(reply: { code(statusCode: number): { send(payload: unknown): unknown } }, error: unknown) {
@@ -175,6 +181,36 @@ app.get<{ Params: WorkspaceParams; Querystring: WorkspaceSearchQuery }>(
         request.query.query,
         parseBoundedInteger(request.query.limit, 50, 1, 100)
       );
+    } catch (error) {
+      return sendWorkspaceError(reply, error);
+    }
+  }
+);
+
+app.post<{ Params: WorkspaceParams; Body: WorkspacePatchPreviewBody }>(
+  "/api/workspaces/:workspaceId/patches/preview",
+  { bodyLimit: patchPreviewBodyLimit },
+  async (request, reply) => {
+    if (!request.body?.path?.trim()) {
+      return reply.code(400).send({
+        error: {
+          code: "file_path_required",
+          message: "file path is required"
+        }
+      });
+    }
+
+    if (typeof request.body.newContent !== "string") {
+      return reply.code(400).send({
+        error: {
+          code: "patch_content_required",
+          message: "patch preview content is required"
+        }
+      });
+    }
+
+    try {
+      return await workspaceService.previewPatch(request.params.workspaceId, request.body.path, request.body.newContent);
     } catch (error) {
       return sendWorkspaceError(reply, error);
     }

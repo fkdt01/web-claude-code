@@ -5,7 +5,9 @@ import { randomUUID } from "node:crypto";
 import type {
   WorkspaceAuditEvent,
   WorkspaceDescriptor,
+  WorkspaceDiffLine,
   WorkspaceFileRead,
+  WorkspacePatchPreview,
   WorkspaceSearchMatch,
   WorkspaceSearchResult,
   WorkspaceTreeEntry
@@ -14,12 +16,15 @@ import type {
 const DEFAULT_EXCLUDED_NAMES = new Set([".git", "node_modules", "dist", ".logs", ".vite"]);
 const SENSITIVE_FILE_NAMES = new Set([".env", ".env.local", ".env.production", ".env.development"]);
 const MAX_READ_BYTES = 256 * 1024;
+const MAX_PATCH_PREVIEW_BYTES = MAX_READ_BYTES;
 const MAX_SEARCH_FILE_BYTES = 1024 * 1024;
 const MAX_TREE_DEPTH = 6;
 const MAX_TREE_ENTRIES = 600;
 const MAX_SEARCH_RESULTS = 100;
 const MAX_SEARCH_FILES = 2_000;
 const MAX_QUERY_LENGTH = 200;
+const MAX_DIFF_LINES = 800;
+const DIFF_CONTEXT_LINES = 3;
 
 type WorkspaceRecord = WorkspaceDescriptor & {
   audit: WorkspaceAuditEvent[];
@@ -92,6 +97,66 @@ async function isBinaryFile(filePath: string) {
   } finally {
     await handle.close();
   }
+}
+
+function createDiffLines(originalContent: string, updatedContent: string) {
+  if (originalContent === updatedContent) {
+    return { diff: [] as WorkspaceDiffLine[], truncated: false };
+  }
+
+  const oldLines = originalContent.split(/\r?\n/);
+  const newLines = updatedContent.split(/\r?\n/);
+  let prefix = 0;
+  while (prefix < oldLines.length && prefix < newLines.length && oldLines[prefix] === newLines[prefix]) {
+    prefix += 1;
+  }
+
+  let suffix = 0;
+  while (
+    suffix < oldLines.length - prefix &&
+    suffix < newLines.length - prefix &&
+    oldLines[oldLines.length - 1 - suffix] === newLines[newLines.length - 1 - suffix]
+  ) {
+    suffix += 1;
+  }
+
+  const oldChangeEnd = oldLines.length - suffix;
+  const newChangeEnd = newLines.length - suffix;
+  const diff: WorkspaceDiffLine[] = [];
+  let truncated = false;
+  const pushLine = (line: WorkspaceDiffLine) => {
+    if (diff.length >= MAX_DIFF_LINES) {
+      truncated = true;
+      return;
+    }
+    diff.push(line);
+  };
+
+  const contextStart = Math.max(0, prefix - DIFF_CONTEXT_LINES);
+  for (let index = contextStart; index < prefix; index += 1) {
+    pushLine({ type: "context", oldLine: index + 1, newLine: index + 1, content: oldLines[index] ?? "" });
+  }
+
+  for (let index = prefix; index < oldChangeEnd; index += 1) {
+    pushLine({ type: "remove", oldLine: index + 1, content: oldLines[index] ?? "" });
+  }
+
+  for (let index = prefix; index < newChangeEnd; index += 1) {
+    pushLine({ type: "add", newLine: index + 1, content: newLines[index] ?? "" });
+  }
+
+  for (let offset = 0; offset < Math.min(DIFF_CONTEXT_LINES, suffix); offset += 1) {
+    const oldIndex = oldChangeEnd + offset;
+    const newIndex = newChangeEnd + offset;
+    pushLine({
+      type: "context",
+      oldLine: oldIndex + 1,
+      newLine: newIndex + 1,
+      content: oldLines[oldIndex] ?? ""
+    });
+  }
+
+  return { diff, truncated };
 }
 
 function parseAllowedRoots(envValue: string | undefined, fallback: string) {
@@ -272,6 +337,52 @@ export class WorkspaceService {
       };
     } catch (error) {
       this.audit(workspace, "search_workspace", "error", cleanQuery, error instanceof Error ? error.message : "Unknown error.");
+      throw error;
+    }
+  }
+
+  async previewPatch(workspaceId: string, relativePath: string, newContent: string): Promise<WorkspacePatchPreview> {
+    const workspace = this.requireWorkspace(workspaceId);
+    try {
+      if (newContent.includes("\0")) {
+        throw new WorkspaceError("patch_content_binary", "Patch preview content must be text.", 415);
+      }
+
+      const updatedSize = Buffer.byteLength(newContent, "utf8");
+      if (updatedSize > MAX_PATCH_PREVIEW_BYTES) {
+        throw new WorkspaceError("patch_preview_too_large", `Patch preview exceeds limit of ${MAX_PATCH_PREVIEW_BYTES} bytes.`, 413);
+      }
+
+      const filePath = await this.resolveInsideWorkspace(workspace, relativePath, "file");
+      const stat = await fs.stat(filePath);
+      if (stat.size > MAX_READ_BYTES) {
+        throw new WorkspaceError("file_too_large", `File exceeds read limit of ${MAX_READ_BYTES} bytes.`, 413);
+      }
+      if (await isBinaryFile(filePath)) {
+        throw new WorkspaceError("binary_file_not_readable", "Binary files cannot be diffed as text.", 415);
+      }
+
+      const originalContent = await fs.readFile(filePath, "utf8");
+      const portablePath = toPortableRelativePath(workspace.root, filePath);
+      const { diff, truncated } = createDiffLines(originalContent, newContent);
+      this.audit(
+        workspace,
+        "preview_patch",
+        "allowed",
+        portablePath,
+        `Previewed patch with ${diff.length} diff line(s)${truncated ? " and truncated output" : ""}.`
+      );
+      return {
+        workspaceId: workspace.id,
+        path: portablePath,
+        originalSize: stat.size,
+        updatedSize,
+        changed: originalContent !== newContent,
+        truncated,
+        diff
+      };
+    } catch (error) {
+      this.audit(workspace, "preview_patch", "denied", safeInputTarget(relativePath), error instanceof Error ? error.message : "Unknown error.");
       throw error;
     }
   }
