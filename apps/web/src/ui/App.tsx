@@ -372,6 +372,109 @@ function applyRunStreamEvent(current: RunResult | undefined, event: RunStreamEve
   return current;
 }
 
+type StreamEventLevel = "info" | "done" | "warning";
+
+type StreamEventLogItem = {
+  id: string;
+  at: string;
+  label: string;
+  detail: string;
+  level: StreamEventLevel;
+};
+
+type StreamEventLogDraft = Omit<StreamEventLogItem, "id">;
+
+function streamEventLogDraft(event: RunStreamEvent): StreamEventLogDraft {
+  if (event.type === "run_started") {
+    return {
+      at: event.at,
+      label: "运行已开始",
+      detail: `${event.mode} · ${event.selectedModels.length} 个模型`,
+      level: "info"
+    };
+  }
+
+  if (event.type === "model_started") {
+    return {
+      at: event.at,
+      label: "模型已连接",
+      detail: `${event.provider}/${event.model} · ${event.role}`,
+      level: "info"
+    };
+  }
+
+  if (event.type === "model_event") {
+    if (event.event.type === "message_delta") {
+      return {
+        at: event.at,
+        label: "收到输出片段",
+        detail: `${event.modelKey} · ${event.event.text.length} 字符`,
+        level: "info"
+      };
+    }
+
+    if (event.event.type === "usage") {
+      return {
+        at: event.at,
+        label: "收到用量",
+        detail: `${event.modelKey} · ${event.event.usage.totalTokens} tokens`,
+        level: "info"
+      };
+    }
+
+    if (event.event.type === "tool_call") {
+      return {
+        at: event.at,
+        label: "模型请求工具",
+        detail: `${event.modelKey} · ${event.event.call.name}`,
+        level: "info"
+      };
+    }
+
+    if (event.event.type === "error") {
+      return {
+        at: event.at,
+        label: "模型事件错误",
+        detail: `${event.modelKey} · ${event.event.message}`,
+        level: "warning"
+      };
+    }
+
+    return {
+      at: event.at,
+      label: "模型流结束",
+      detail: event.modelKey,
+      level: "done"
+    };
+  }
+
+  if (event.type === "model_done") {
+    return {
+      at: event.at,
+      label: event.result.ok ? "模型已完成" : "模型失败",
+      detail: `${event.result.provider}/${event.result.model} · ${event.result.role}`,
+      level: event.result.ok ? "done" : "warning"
+    };
+  }
+
+  if (event.type === "run_done") {
+    const failed = event.run.responses.filter((response) => !response.ok).length;
+    return {
+      at: event.at,
+      label: "运行已完成",
+      detail: `${event.run.responses.length} 个响应${failed ? ` · ${failed} 个失败` : ""}`,
+      level: failed ? "warning" : "done"
+    };
+  }
+
+  return {
+    at: event.at,
+    label: "流式错误",
+    detail: event.message,
+    level: "warning"
+  };
+}
+
 export function App() {
   const [bootstrap, setBootstrap] = useState<BootstrapPayload | null>(null);
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
@@ -381,6 +484,7 @@ export function App() {
   const [routePreviewError, setRoutePreviewError] = useState<string | null>(null);
   const [routePreviewLoading, setRoutePreviewLoading] = useState(false);
   const [runState, setRunState] = useState<UiRunState>({ status: "idle" });
+  const [streamEvents, setStreamEvents] = useState<StreamEventLogItem[]>([]);
   const [runHistory, setRunHistory] = useState<RunHistoryItem[]>([]);
   const [runHistoryError, setRunHistoryError] = useState<string | null>(null);
   const [runHistoryLoading, setRunHistoryLoading] = useState(false);
@@ -420,6 +524,7 @@ export function App() {
   const runAbortRef = useRef<AbortController | null>(null);
   const runHistoryRequestRef = useRef(0);
   const runRequestRef = useRef(0);
+  const streamEventSeqRef = useRef(0);
 
   useEffect(() => {
     loadBootstrap()
@@ -567,12 +672,19 @@ export function App() {
       !patchApplyLoading &&
       !workspaceFileHasSensitiveContent
   );
+  const visibleStreamEvents = useMemo(() => {
+    if (streamEvents.length <= 10) return streamEvents;
+    const first = streamEvents[0];
+    return first ? [first, ...streamEvents.slice(-9)] : streamEvents;
+  }, [streamEvents]);
 
   async function openRunHistory(runId: string) {
     setRunHistoryLoading(true);
     setRunHistoryError(null);
     try {
       const detail = await loadRunHistoryDetail(runId);
+      streamEventSeqRef.current = 0;
+      setStreamEvents([]);
       setRunState({ status: "done", result: detail.run });
       setRunHistory((current) => {
         const withoutCurrent = current.filter((item) => item.id !== detail.item.id);
@@ -598,12 +710,25 @@ export function App() {
     runAbortRef.current?.abort();
     const abortController = new AbortController();
     runAbortRef.current = abortController;
+    streamEventSeqRef.current = 0;
+    setStreamEvents([]);
     setRunState(result ? { status: "loading", result } : { status: "loading" });
     try {
       const streamed = await streamRun(
         request,
         (event) => {
           if (runRequestRef.current !== requestId) return;
+          const draft = streamEventLogDraft(event);
+          setStreamEvents((current) =>
+            [
+              ...current,
+              {
+                ...draft,
+                detail: maskSensitiveText(draft.detail),
+                id: `${draft.at}:${draft.label}:${streamEventSeqRef.current++}`
+              }
+            ].slice(-40)
+          );
           setRunState((current) => {
             const next = applyRunStreamEvent(current.result, event);
             return next ? { status: "loading", result: next } : current;
@@ -616,9 +741,24 @@ export function App() {
       void refreshRunHistory();
     } catch (error) {
       if (abortController.signal.aborted) return;
+      const at = new Date().toISOString();
+      const message = maskSensitiveText(error instanceof Error ? error.message : "运行失败");
+      setStreamEvents((current) => {
+        const previous = current[current.length - 1];
+        if (previous?.label === "流式错误" && previous.detail === message) return current;
+        return [
+          ...current,
+          {
+            id: `${at}:流式错误:${streamEventSeqRef.current++}`,
+            at,
+            label: "流式错误",
+            detail: message,
+            level: "warning" as const
+          }
+        ].slice(-40);
+      });
       setRunState((current) => {
         const fallbackResult = current.result ?? result;
-        const message = maskSensitiveText(error instanceof Error ? error.message : "运行失败");
         return fallbackResult
           ? { status: "error", result: fallbackResult, error: message }
           : { status: "error", error: message };
@@ -1311,6 +1451,24 @@ export function App() {
                   <p className="empty">仅调用后端受保护的手动 shell API；非 Linux 后端会返回禁用错误。</p>
                 )}
               </div>
+            </div>
+          </section>
+
+          <section className="inspector-card">
+            <div className="card-title">
+              <Activity size={17} />
+              <h2>实时流</h2>
+            </div>
+            <div className="stream-list">
+              {visibleStreamEvents.map((event) => (
+                <div className={`stream-event ${event.level}`} key={event.id}>
+                  <strong>{event.label}</strong>
+                  <span>
+                    {formatHistoryTime(event.at)} · {maskSensitiveText(event.detail)}
+                  </span>
+                </div>
+              ))}
+              {!streamEvents.length ? <p className="empty">运行任务时会显示 SSE 事件。</p> : null}
             </div>
           </section>
 

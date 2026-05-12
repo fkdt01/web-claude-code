@@ -577,13 +577,15 @@ button {
 }
 
 .tool-list,
-.audit-list {
+.audit-list,
+.stream-list {
   display: grid;
   gap: 8px;
 }
 
 .tool-item,
-.audit-event {
+.audit-event,
+.stream-event {
   display: grid;
   gap: 3px;
   padding: 10px;
@@ -593,22 +595,29 @@ button {
 
 .tool-item span,
 .audit-event span,
+.stream-event span,
 .empty,
 .token-line {
   color: #6b716d;
   font-size: 13px;
 }
 
-.audit-event {
+.audit-event,
+.stream-event {
   border-left: 4px solid #226f6b;
 }
 
-.audit-event.warning {
+.audit-event.warning,
+.stream-event.warning {
   border-left-color: #c25c45;
 }
 
 .audit-event.blocked {
   border-left-color: #90313f;
+}
+
+.stream-event.done {
+  border-left-color: #327a52;
 }
 
 .empty {
