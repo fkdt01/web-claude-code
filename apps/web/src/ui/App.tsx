@@ -65,6 +65,9 @@ const DEFAULT_PROMPT =
 const DEFAULT_MAX_OUTPUT_TOKENS = 1200;
 const MIN_MAX_OUTPUT_TOKENS = 1;
 const MAX_MAX_OUTPUT_TOKENS = 200_000;
+const DEFAULT_SHELL_TIMEOUT_MS = 5_000;
+const MIN_SHELL_TIMEOUT_MS = 500;
+const MAX_SHELL_TIMEOUT_MS = 15_000;
 
 const SECRET_VALUE_PATTERN = /((?:api[_-]?key|secret|token|password|passwd)\s*[:=]\s*)[^\s'",;]+/gi;
 const BEARER_TOKEN_PATTERN = /(bearer\s+)[a-z0-9._-]+/gi;
@@ -84,6 +87,11 @@ function maskWorkspaceError(error: unknown, fallback: string) {
 function clampMaxOutputTokens(value: number) {
   if (!Number.isFinite(value)) return DEFAULT_MAX_OUTPUT_TOKENS;
   return Math.min(MAX_MAX_OUTPUT_TOKENS, Math.max(MIN_MAX_OUTPUT_TOKENS, Math.floor(value)));
+}
+
+function clampShellTimeout(value: number, max = MAX_SHELL_TIMEOUT_MS) {
+  if (!Number.isFinite(value)) return DEFAULT_SHELL_TIMEOUT_MS;
+  return Math.min(max, Math.max(MIN_SHELL_TIMEOUT_MS, Math.floor(value)));
 }
 
 function formatPreviewExpiry(value: string) {
@@ -538,6 +546,7 @@ export function App() {
   const [patchApplyMessage, setPatchApplyMessage] = useState<string | null>(null);
   const [shellCommand, setShellCommand] = useState("pwd");
   const [shellCwd, setShellCwd] = useState(".");
+  const [shellTimeoutMs, setShellTimeoutMs] = useState(DEFAULT_SHELL_TIMEOUT_MS);
   const [shellPreview, setShellPreview] = useState<WorkspaceShellPreflight | null>(null);
   const [shellPreviewSource, setShellPreviewSource] = useState<{ command: string; cwd: string } | null>(null);
   const [shellPreviewError, setShellPreviewError] = useState<string | null>(null);
@@ -779,6 +788,8 @@ export function App() {
       shellPreviewSource.cwd === (shellCwd.trim() || ".")
   );
   const visibleShellPreview = shellPreviewMatchesInput ? shellPreview : null;
+  const shellTimeoutMax = visibleShellPreview?.limits.timeoutMsMax ?? MAX_SHELL_TIMEOUT_MS;
+  const boundedShellTimeoutMs = clampShellTimeout(shellTimeoutMs, shellTimeoutMax);
   const shellCanRun = Boolean(
     workspace &&
       shellCommand.trim() &&
@@ -1120,7 +1131,7 @@ export function App() {
     setShellError(null);
     setShellResult(null);
     try {
-      const result = await runWorkspaceShell(workspaceId, command, shellCwd.trim() || ".", 5000);
+      const result = await runWorkspaceShell(workspaceId, command, shellCwd.trim() || ".", boundedShellTimeoutMs);
       if (shellRequestRef.current !== requestId || workspace?.id !== workspaceId) return;
       setShellResult(result);
       try {
@@ -1606,6 +1617,25 @@ export function App() {
                     placeholder="."
                     title="工作目录"
                   />
+                  <input
+                    type="number"
+                    min={MIN_SHELL_TIMEOUT_MS}
+                    max={shellTimeoutMax}
+                    step={500}
+                    value={boundedShellTimeoutMs}
+                    onChange={(event) => {
+                      setShellTimeoutMs(clampShellTimeout(Number(event.target.value), shellTimeoutMax));
+                      setShellResult(null);
+                      setShellError(null);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && workspace && !shellLoading && shellCommand.trim()) {
+                        void runShellCommand();
+                      }
+                    }}
+                    disabled={workspaceLoading || shellLoading}
+                    title="命令超时毫秒"
+                  />
                   <button
                     type="button"
                     onClick={() => void runShellCommand()}
@@ -1625,7 +1655,7 @@ export function App() {
                     </span>
                     <small>
                       允许模板：{visibleShellPreview.commands.map((command) => command.usage).join("、")} · 最长{" "}
-                      {Math.round(visibleShellPreview.limits.timeoutMsMax / 1000)}s
+                      {Math.round(visibleShellPreview.limits.timeoutMsMax / 1000)}s · 本次 {Math.round(boundedShellTimeoutMs / 1000)}s
                     </small>
                   </div>
                 ) : null}

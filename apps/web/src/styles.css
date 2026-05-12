@@ -902,7 +902,7 @@ button {
 
 .shell-controls {
   display: grid;
-  grid-template-columns: minmax(0, 1.5fr) minmax(54px, 0.7fr) 36px;
+  grid-template-columns: minmax(0, 1.4fr) minmax(54px, 0.7fr) 84px 36px;
   gap: 8px;
 }
 
