@@ -1,0 +1,141 @@
+export type ProviderId = "mock" | "anthropic" | "openai" | "openrouter" | "gemini" | string;
+
+export type OrchestrationMode = "single" | "race" | "committee" | "specialist";
+
+export type AgentRole = "planner" | "coder" | "reviewer" | "generalist";
+
+export type ContentPart =
+  | { type: "text"; text: string }
+  | { type: "image"; mimeType: string; data: string }
+  | { type: "file"; name: string; text?: string; uri?: string };
+
+export type UnifiedMessage = {
+  role: "system" | "user" | "assistant" | "tool";
+  content: ContentPart[];
+  toolCallId?: string;
+  metadata?: Record<string, unknown>;
+};
+
+export type ModelCapabilities = {
+  streaming: boolean;
+  toolCalls: boolean;
+  vision: boolean;
+  jsonMode: boolean;
+  contextWindow: number;
+};
+
+export type ModelCost = {
+  inputPerMillion?: number;
+  outputPerMillion?: number;
+  currency?: "USD" | string;
+};
+
+export type ModelDescriptor = {
+  id: string;
+  provider: ProviderId;
+  label: string;
+  role: AgentRole;
+  available: boolean;
+  capabilities: ModelCapabilities;
+  cost?: ModelCost;
+};
+
+export type ToolPermission = {
+  filesystem?: "none" | "read" | "write";
+  shell?: boolean;
+  network?: boolean;
+  secrets?: boolean;
+};
+
+export type ToolSpec = {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+  permissions: ToolPermission;
+};
+
+export type UnifiedChatRequest = {
+  runId: string;
+  model: ModelDescriptor;
+  messages: UnifiedMessage[];
+  tools?: ToolSpec[];
+  temperature?: number;
+  maxOutputTokens?: number;
+  metadata?: Record<string, unknown>;
+};
+
+export type TokenUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  estimatedCostUsd?: number;
+};
+
+export type ToolCall = {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+};
+
+export type ModelEvent =
+  | { type: "message_delta"; runId: string; modelKey: string; text: string }
+  | { type: "tool_call"; runId: string; modelKey: string; call: ToolCall }
+  | { type: "usage"; runId: string; modelKey: string; usage: TokenUsage }
+  | { type: "error"; runId: string; modelKey: string; message: string; retryable: boolean }
+  | { type: "done"; runId: string; modelKey: string };
+
+export type ProviderAdapter = {
+  id: ProviderId;
+  displayName: string;
+  models(): ModelDescriptor[];
+  chat(request: UnifiedChatRequest): AsyncIterable<ModelEvent>;
+};
+
+export type RunRequest = {
+  prompt: string;
+  mode: OrchestrationMode;
+  selectedModels: string[];
+  workspaceId?: string;
+  maxOutputTokens?: number;
+};
+
+export type ModelRunResult = {
+  modelKey: string;
+  provider: ProviderId;
+  model: string;
+  role: AgentRole;
+  ok: boolean;
+  text: string;
+  usage?: TokenUsage;
+  error?: string;
+};
+
+export type AuditEvent = {
+  id: string;
+  level: "info" | "warning" | "blocked";
+  label: string;
+  detail: string;
+  at: string;
+};
+
+export type RunResult = {
+  id: string;
+  mode: OrchestrationMode;
+  startedAt: string;
+  completedAt: string;
+  selectedModels: string[];
+  final: string;
+  responses: ModelRunResult[];
+  audit: AuditEvent[];
+};
+
+export const modelKey = (model: Pick<ModelDescriptor, "provider" | "id">) => `${model.provider}:${model.id}`;
+
+export const textFromContent = (content: ContentPart[]) =>
+  content
+    .map((part) => {
+      if (part.type === "text") return part.text;
+      if (part.type === "file") return part.text ? `File ${part.name}:\n${part.text}` : `File ${part.name}`;
+      return `[${part.mimeType} image]`;
+    })
+    .join("\n");

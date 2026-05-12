@@ -1,0 +1,23 @@
+[Unit]
+Description=Web Claude Code API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/web-claude-code
+Environment=NODE_ENV=production
+EnvironmentFile=/etc/web-claude-code/server.env
+ExecStart=/usr/bin/npm run start -w apps/server
+Restart=always
+RestartSec=3
+User=webcode
+Group=webcode
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/web-claude-code
+
+[Install]
+WantedBy=multi-user.target
