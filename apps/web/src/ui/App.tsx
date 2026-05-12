@@ -464,6 +464,7 @@ export function App() {
       prompt,
       mode,
       selectedModels,
+      ...(workspace ? { workspaceId: workspace.id } : {}),
       maxOutputTokens: 1200
     };
     const requestId = runRequestRef.current + 1;

@@ -10,7 +10,8 @@ import type {
   RunResult,
   RunStreamEvent,
   TokenUsage,
-  UnifiedChatRequest
+  UnifiedChatRequest,
+  WorkspaceRunContext
 } from "@webcode/core";
 import { defaultToolSpecs, modelKey } from "@webcode/core";
 
@@ -25,6 +26,29 @@ type StreamRunOptions = {
 };
 
 const systemPrompt = `You are a web coding agent. Work from explicit user intent, prefer reviewable patches, and surface risky tool usage before execution.`;
+const SECRET_VALUE_PATTERN = /((?:api[_-]?key|secret|token|password|passwd)\s*[:=]\s*)[^\s'",;]+/gi;
+const BEARER_TOKEN_PATTERN = /(bearer\s+)[a-z0-9._-]+/gi;
+const OPENAI_KEY_PATTERN = /sk-[a-z0-9_-]+/gi;
+
+const maskSensitiveText = (value: string) =>
+  value
+    .replace(SECRET_VALUE_PATTERN, "$1[redacted]")
+    .replace(BEARER_TOKEN_PATTERN, "$1[redacted]")
+    .replace(OPENAI_KEY_PATTERN, "[redacted]");
+
+function formatWorkspaceContext(context: WorkspaceRunContext) {
+  const name = maskSensitiveText(context.name);
+  const treeLines = context.treeLines.map(maskSensitiveText);
+  return [
+    "Read-only workspace context:",
+    `Workspace: ${name}`,
+    "File tree snapshot:",
+    ...treeLines.map((line) => `- ${line}`),
+    context.truncated ? "(Tree snapshot truncated.)" : ""
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
 
 function audit(label: string, detail: string, level: AuditEvent["level"] = "info"): AuditEvent {
   return {
@@ -79,6 +103,9 @@ function createChatRequest(
   runId: string,
   signal?: AbortSignal
 ): UnifiedChatRequest {
+  const systemText = request.workspaceContext
+    ? `${systemPrompt}\n\n${formatWorkspaceContext(request.workspaceContext)}`
+    : systemPrompt;
   return {
     runId,
     model: entry.model,
@@ -89,7 +116,7 @@ function createChatRequest(
     messages: [
       {
         role: "system",
-        content: [{ type: "text", text: systemPrompt }]
+        content: [{ type: "text", text: systemText }]
       },
       {
         role: "user",
@@ -334,7 +361,15 @@ export async function orchestrateRun(request: RunRequest, providers: ProviderAda
 
   const events: AuditEvent[] = [
     audit("任务已创建", `编排模式：${request.mode}，模型数量：${entries.length}。`),
-    audit("工具策略已加载", `${defaultToolSpecs.length} 个工具规格已接入策略检查。`)
+    audit("工具策略已加载", `${defaultToolSpecs.length} 个工具规格已接入策略检查。`),
+    ...(request.workspaceContext
+      ? [
+          audit(
+            "工作区上下文已注入",
+            `${maskSensitiveText(request.workspaceContext.name)}：${request.workspaceContext.treeLines.length} 行只读文件树摘要。`
+          )
+        ]
+      : [])
   ];
 
   const responses =
@@ -369,7 +404,15 @@ export async function* streamRun(
   const { entries } = routeEntries(request, providers);
   const events: AuditEvent[] = [
     audit("任务已创建", `编排模式：${request.mode}，模型数量：${entries.length}。`),
-    audit("工具策略已加载", `${defaultToolSpecs.length} 个工具规格已接入策略检查。`)
+    audit("工具策略已加载", `${defaultToolSpecs.length} 个工具规格已接入策略检查。`),
+    ...(request.workspaceContext
+      ? [
+          audit(
+            "工作区上下文已注入",
+            `${maskSensitiveText(request.workspaceContext.name)}：${request.workspaceContext.treeLines.length} 行只读文件树摘要。`
+          )
+        ]
+      : [])
   ];
   const queue = new AsyncQueue<RunStreamEvent>();
   const results: ModelRunResult[] = [];

@@ -10,6 +10,7 @@ import type {
   WorkspaceFileRead,
   WorkspacePatchApplyResult,
   WorkspacePatchPreview,
+  WorkspaceRunContext,
   WorkspaceShellRunResult,
   WorkspaceSearchMatch,
   WorkspaceSearchResult,
@@ -29,6 +30,8 @@ const MAX_SEARCH_RESULTS = 100;
 const MAX_SEARCH_FILES = 2_000;
 const MAX_QUERY_LENGTH = 200;
 const MAX_DIFF_LINES = 800;
+const MAX_CONTEXT_TREE_LINES = 80;
+const CONTEXT_TREE_DEPTH = 2;
 const DIFF_CONTEXT_LINES = 3;
 const MAX_SHELL_COMMAND_LENGTH = 300;
 const MAX_SHELL_OUTPUT_BYTES = 64 * 1024;
@@ -422,7 +425,7 @@ export class WorkspaceService {
       audit: []
     };
     this.workspaces.set(workspace.id, workspace);
-    this.audit(workspace, "register_workspace", "allowed", ".", `Registered workspace ${workspace.name}.`);
+    this.audit(workspace, "register_workspace", "allowed", ".", `Registered workspace ${maskSensitiveText(workspace.name)}.`);
     const { audit: _audit, ...descriptor } = workspace;
     return descriptor;
   }
@@ -524,6 +527,40 @@ export class WorkspaceService {
       };
     } catch (error) {
       this.audit(workspace, "search_workspace", "error", cleanQuery, error instanceof Error ? error.message : "Unknown error.");
+      throw error;
+    }
+  }
+
+  async contextSummary(workspaceId: string): Promise<WorkspaceRunContext> {
+    const workspace = this.requireWorkspace(workspaceId);
+    try {
+      const directory = await this.resolveInsideWorkspace(workspace, ".", "directory");
+      const counter = { value: 0 };
+      const root = await this.buildTree(workspace, directory, CONTEXT_TREE_DEPTH, counter);
+      const lines: string[] = [];
+      const truncatedByLines = this.flattenTree(root, lines);
+      const truncated = truncatedByLines || counter.value >= MAX_TREE_ENTRIES;
+      this.audit(
+        workspace,
+        "file_tree",
+        "allowed",
+        ".",
+        `Built run context with ${lines.length} tree line(s)${truncated ? " and truncated output" : ""}.`
+      );
+      return {
+        workspaceId: workspace.id,
+        name: maskSensitiveText(workspace.name),
+        treeLines: lines.map(maskSensitiveText),
+        truncated
+      };
+    } catch (error) {
+      this.audit(
+        workspace,
+        "file_tree",
+        "denied",
+        ".",
+        error instanceof Error ? error.message : "Unknown error."
+      );
       throw error;
     }
   }
@@ -808,6 +845,22 @@ export class WorkspaceService {
     }
 
     return { ...base, children };
+  }
+
+  private flattenTree(entry: WorkspaceTreeEntry, lines: string[], depth = 0): boolean {
+    if (lines.length >= MAX_CONTEXT_TREE_LINES) return true;
+
+    const suffix = entry.kind === "directory" ? "/" : "";
+    lines.push(`${"  ".repeat(depth)}${entry.name}${suffix}`);
+
+    let truncated = false;
+    for (const child of entry.children ?? []) {
+      if (this.flattenTree(child, lines, depth + 1)) {
+        truncated = true;
+        break;
+      }
+    }
+    return truncated;
   }
 
   private async *walkTextCandidateFiles(root: string): AsyncGenerator<string> {

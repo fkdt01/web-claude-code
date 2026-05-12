@@ -92,11 +92,19 @@ export type ProviderAdapter = {
   chat(request: UnifiedChatRequest): AsyncIterable<ModelEvent>;
 };
 
+export type WorkspaceRunContext = {
+  workspaceId: string;
+  name: string;
+  treeLines: string[];
+  truncated: boolean;
+};
+
 export type RunRequest = {
   prompt: string;
   mode: OrchestrationMode;
   selectedModels: string[];
   workspaceId?: string;
+  workspaceContext?: WorkspaceRunContext;
   maxOutputTokens?: number;
 };
 

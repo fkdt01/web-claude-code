@@ -26,6 +26,10 @@
 
 ## 接口
 
+### `POST /api/runs` / `POST /api/runs/stream`
+
+当请求体携带已注册的 `workspaceId` 时，后端会在模型调用前生成一个只读文件树摘要，并作为 system context 注入本次 run。该摘要只包含脱敏后的 workspace 名称和文件树行，不读取文件内容、不执行 shell、不绕过 patch 审批；对应 workspace audit 会记录一次 `file_tree` 事件，run audit 会记录“工作区上下文已注入”。
+
 ### `GET /api/workspaces`
 
 返回允许根目录和已注册 workspace。

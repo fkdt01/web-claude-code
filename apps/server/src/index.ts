@@ -110,8 +110,18 @@ function normalizeRunRequest(body: RunRequest): RunRequest {
     prompt: body.prompt,
     mode: normalizeMode(body.mode),
     selectedModels: normalizeSelectedModels(body.selectedModels),
-    ...(body.workspaceId ? { workspaceId: body.workspaceId } : {}),
+    ...(typeof body.workspaceId === "string" && body.workspaceId ? { workspaceId: body.workspaceId } : {}),
     ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {})
+  };
+}
+
+async function prepareRunRequest(body: RunRequest): Promise<RunRequest> {
+  const normalized = normalizeRunRequest(body);
+  if (!normalized.workspaceId) return normalized;
+
+  return {
+    ...normalized,
+    workspaceContext: await workspaceService.contextSummary(normalized.workspaceId)
   };
 }
 
@@ -151,14 +161,25 @@ app.post<{ Body: RunRequest }>("/api/runs", async (request, reply) => {
     return reply.code(400).send({ error: "prompt is required" });
   }
 
-  const result = await orchestrateRun(normalizeRunRequest(request.body), providers);
+  try {
+    const result = await orchestrateRun(await prepareRunRequest(request.body), providers);
 
-  return result;
+    return result;
+  } catch (error) {
+    return sendWorkspaceError(reply, error);
+  }
 });
 
 app.post<{ Body: RunRequest }>("/api/runs/stream", async (request, reply) => {
   if (typeof request.body?.prompt !== "string" || !request.body.prompt.trim()) {
     return reply.code(400).send({ error: "prompt is required" });
+  }
+
+  let runRequest: RunRequest;
+  try {
+    runRequest = await prepareRunRequest(request.body);
+  } catch (error) {
+    return sendWorkspaceError(reply, error);
   }
 
   reply.hijack();
@@ -175,7 +196,7 @@ app.post<{ Body: RunRequest }>("/api/runs/stream", async (request, reply) => {
   reply.raw.write(": connected\n\n");
 
   try {
-    for await (const event of streamRun(normalizeRunRequest(request.body), providers, {
+    for await (const event of streamRun(runRequest, providers, {
       signal: abortController.signal
     })) {
       if (reply.raw.destroyed || abortController.signal.aborted) {
