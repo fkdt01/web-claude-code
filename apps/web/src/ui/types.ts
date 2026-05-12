@@ -2,6 +2,8 @@ import type {
   ModelDescriptor,
   OrchestrationMode,
   RoutePreview,
+  RunHistoryDetail,
+  RunHistoryItem,
   RunResult,
   ToolSpec,
   WorkspaceAuditEvent,
@@ -55,6 +57,12 @@ export type WorkspacePatchApplyPayload = WorkspacePatchApplyResult;
 export type WorkspaceShellRunPayload = WorkspaceShellRunResult;
 
 export type RoutePreviewPayload = RoutePreview;
+
+export type RunHistoryPayload = {
+  runs: RunHistoryItem[];
+};
+
+export type RunHistoryDetailPayload = RunHistoryDetail;
 
 export type WorkspaceAuditPayload = {
   audit: WorkspaceAuditEvent[];

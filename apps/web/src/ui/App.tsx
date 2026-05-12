@@ -27,6 +27,7 @@ import type {
   ModelRunResult,
   OrchestrationMode,
   RoutePreview,
+  RunHistoryItem,
   RunRequest,
   RunResult,
   RunStreamEvent,
@@ -42,6 +43,8 @@ import { modelKey } from "@webcode/core";
 import {
   applyWorkspacePatch,
   loadBootstrap,
+  loadRunHistory,
+  loadRunHistoryDetail,
   loadWorkspaceAudit,
   loadWorkspaceTree,
   loadWorkspaces,
@@ -119,6 +122,15 @@ function formatModelCost(cost: ModelCost | undefined) {
   const input = formatUsd(cost.inputPerMillion);
   const output = formatUsd(cost.outputPerMillion);
   return `输入 ${input}/M · 输出 ${output}/M`;
+}
+
+function formatHistoryTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "刚刚";
+  return new Intl.DateTimeFormat("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(date);
 }
 
 function ModelStatus({ available }: { available: boolean }) {
@@ -369,6 +381,9 @@ export function App() {
   const [routePreviewError, setRoutePreviewError] = useState<string | null>(null);
   const [routePreviewLoading, setRoutePreviewLoading] = useState(false);
   const [runState, setRunState] = useState<UiRunState>({ status: "idle" });
+  const [runHistory, setRunHistory] = useState<RunHistoryItem[]>([]);
+  const [runHistoryError, setRunHistoryError] = useState<string | null>(null);
+  const [runHistoryLoading, setRunHistoryLoading] = useState(false);
   const [showInspector, setShowInspector] = useState(true);
   const [workspace, setWorkspace] = useState<WorkspaceDescriptor | null>(null);
   const [workspaceTree, setWorkspaceTree] = useState<WorkspaceTreeEntry | null>(null);
@@ -403,6 +418,7 @@ export function App() {
   const shellRequestRef = useRef(0);
   const routePreviewRequestRef = useRef(0);
   const runAbortRef = useRef<AbortController | null>(null);
+  const runHistoryRequestRef = useRef(0);
   const runRequestRef = useRef(0);
 
   useEffect(() => {
@@ -501,6 +517,27 @@ export function App() {
       });
   }, [bootstrap, mode, selectedModels]);
 
+  async function refreshRunHistory() {
+    const requestId = runHistoryRequestRef.current + 1;
+    runHistoryRequestRef.current = requestId;
+    setRunHistoryLoading(true);
+    setRunHistoryError(null);
+    try {
+      const payload = await loadRunHistory();
+      if (runHistoryRequestRef.current !== requestId) return;
+      setRunHistory(payload.runs);
+    } catch (error) {
+      if (runHistoryRequestRef.current !== requestId) return;
+      setRunHistoryError(maskSensitiveText(error instanceof Error ? error.message : "加载历史失败"));
+    } finally {
+      if (runHistoryRequestRef.current === requestId) setRunHistoryLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void refreshRunHistory();
+  }, []);
+
   const models = useMemo(() => flattenModels(bootstrap?.providers ?? []), [bootstrap]);
   const result = runState.result;
   const readyCount = models.filter((entry) => entry.model.available).length;
@@ -531,6 +568,23 @@ export function App() {
       !workspaceFileHasSensitiveContent
   );
 
+  async function openRunHistory(runId: string) {
+    setRunHistoryLoading(true);
+    setRunHistoryError(null);
+    try {
+      const detail = await loadRunHistoryDetail(runId);
+      setRunState({ status: "done", result: detail.run });
+      setRunHistory((current) => {
+        const withoutCurrent = current.filter((item) => item.id !== detail.item.id);
+        return [detail.item, ...withoutCurrent];
+      });
+    } catch (error) {
+      setRunHistoryError(maskSensitiveText(error instanceof Error ? error.message : "加载历史详情失败"));
+    } finally {
+      setRunHistoryLoading(false);
+    }
+  }
+
   async function run() {
     const request: RunRequest = {
       prompt,
@@ -559,6 +613,7 @@ export function App() {
       );
       if (runRequestRef.current !== requestId) return;
       setRunState({ status: "done", result: streamed });
+      void refreshRunHistory();
     } catch (error) {
       if (abortController.signal.aborted) return;
       setRunState((current) => {
@@ -846,9 +901,24 @@ export function App() {
 
         <div className="side-group history-group">
           <p>最近任务</p>
-          <button className="history-item">设计 Web 版 Claude Code</button>
-          <button className="history-item">拆解 Provider 网关</button>
-          <button className="history-item">规划 Linux 沙箱部署</button>
+          {runHistory.map((item) => (
+            <button
+              className={`history-item ${result?.id === item.id ? "active" : ""}`}
+              key={item.id}
+              type="button"
+              onClick={() => void openRunHistory(item.id)}
+              disabled={runHistoryLoading}
+              title={item.prompt}
+            >
+              <strong>{item.prompt}</strong>
+              <span>
+                {formatHistoryTime(item.completedAt)} · {item.mode} · {item.selectedModels.length} 模型
+              </span>
+            </button>
+          ))}
+          {!runHistory.length && !runHistoryLoading ? <span className="history-empty">运行后会出现在这里</span> : null}
+          {runHistoryLoading ? <span className="history-empty">历史同步中</span> : null}
+          {runHistoryError ? <span className="history-error">{runHistoryError}</span> : null}
         </div>
 
         <div className="sidebar-foot">

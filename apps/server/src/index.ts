@@ -1,7 +1,14 @@
 import type { ServerResponse } from "node:http";
 import cors from "@fastify/cors";
 import Fastify from "fastify";
-import type { OrchestrationMode, RunRequest, RunStreamEvent } from "@webcode/core";
+import type {
+  OrchestrationMode,
+  RunHistoryDetail,
+  RunHistoryItem,
+  RunRequest,
+  RunResult,
+  RunStreamEvent
+} from "@webcode/core";
 import { classifyShellCommand, defaultToolSpecs } from "@webcode/core";
 import { orchestrateRun, previewRoute, providerPayload, streamRun } from "./orchestrator.js";
 import { createProviderRegistry } from "./providers.js";
@@ -12,8 +19,14 @@ const host = process.env.HOST ?? "0.0.0.0";
 const patchPreviewBodyLimit = 1024 * 1024;
 const maxOutputTokensLimit = 200_000;
 const orchestrationModes = ["single", "race", "committee", "specialist"] as const satisfies readonly OrchestrationMode[];
+const maxRunHistoryItems = 20;
+const maxHistoryPromptLength = 140;
+const maxHistoryPreviewLength = 180;
+const maxHistoryTextLength = 6_000;
 const providers = createProviderRegistry();
 const workspaceService = await createWorkspaceService();
+const runHistory = new Map<string, RunHistoryDetail>();
+const runHistoryOrder: string[] = [];
 
 const app = Fastify({
   logger: true
@@ -25,6 +38,10 @@ await app.register(cors, {
 
 type WorkspaceParams = {
   workspaceId: string;
+};
+
+type RunHistoryParams = {
+  runId: string;
 };
 
 type WorkspaceTreeQuery = {
@@ -63,6 +80,80 @@ type RoutePreviewBody = {
   workspaceId?: unknown;
   maxOutputTokens?: unknown;
 };
+
+const SECRET_VALUE_PATTERN = /((?:api[_-]?key|secret|token|password|passwd)\s*[:=]\s*)[^\s'",;]+/gi;
+const BEARER_TOKEN_PATTERN = /(bearer\s+)[a-z0-9._-]+/gi;
+const OPENAI_KEY_PATTERN = /sk-[a-z0-9_-]+/gi;
+
+const maskSensitiveText = (value: string) =>
+  value
+    .replace(SECRET_VALUE_PATTERN, "$1[redacted]")
+    .replace(BEARER_TOKEN_PATTERN, "$1[redacted]")
+    .replace(OPENAI_KEY_PATTERN, "[redacted]");
+
+function truncateText(value: string, maxLength: number) {
+  const cleanValue = maskSensitiveText(value).replace(/\s+/g, " ").trim();
+  if (cleanValue.length <= maxLength) return cleanValue;
+  return `${cleanValue.slice(0, Math.max(0, maxLength - 1))}…`;
+}
+
+function sanitizeRunForHistory(run: RunResult): RunResult {
+  return {
+    ...run,
+    final: truncateText(run.final, maxHistoryTextLength),
+    responses: run.responses.map((response) => ({
+      ...response,
+      text: truncateText(response.text, maxHistoryTextLength),
+      ...(response.error ? { error: truncateText(response.error, maxHistoryPreviewLength) } : {})
+    })),
+    audit: run.audit.map((event) => ({
+      ...event,
+      detail: truncateText(event.detail, maxHistoryPreviewLength)
+    }))
+  };
+}
+
+function createRunHistoryItem(run: RunResult, request: RunRequest): RunHistoryItem {
+  const totalTokens = run.responses.reduce((sum, response) => {
+    const value = response.usage?.totalTokens;
+    return Number.isFinite(value) ? sum + (value ?? 0) : sum;
+  }, 0);
+  const costValues = run.responses
+    .map((response) => response.usage?.estimatedCostUsd)
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  const estimatedCostUsd =
+    run.responses.length > 0 && costValues.length === run.responses.length
+      ? Number(costValues.reduce((sum, value) => sum + value, 0).toFixed(8))
+      : undefined;
+
+  return {
+    id: run.id,
+    status: "completed",
+    prompt: truncateText(request.prompt, maxHistoryPromptLength) || "Untitled run",
+    mode: run.mode,
+    startedAt: run.startedAt,
+    completedAt: run.completedAt,
+    selectedModels: [...run.selectedModels],
+    responseCount: run.responses.length,
+    totalTokens,
+    finalPreview: truncateText(run.final, maxHistoryPreviewLength),
+    ...(estimatedCostUsd !== undefined ? { estimatedCostUsd } : {})
+  };
+}
+
+function recordRunHistory(run: RunResult, request: RunRequest) {
+  const sanitizedRun = sanitizeRunForHistory(run);
+  const detail: RunHistoryDetail = {
+    item: createRunHistoryItem(sanitizedRun, request),
+    run: sanitizedRun
+  };
+  runHistory.set(run.id, detail);
+  runHistoryOrder.splice(0, runHistoryOrder.length, run.id, ...runHistoryOrder.filter((id) => id !== run.id));
+
+  for (const staleId of runHistoryOrder.splice(maxRunHistoryItems)) {
+    runHistory.delete(staleId);
+  }
+}
 
 function sendWorkspaceError(reply: { code(statusCode: number): { send(payload: unknown): unknown } }, error: unknown) {
   if (error instanceof WorkspaceError) {
@@ -156,13 +247,36 @@ app.post<{ Body: RoutePreviewBody }>("/api/routing/preview", async (request) =>
   previewRoute(normalizeRoutePreviewRequest(request.body), providers)
 );
 
+app.get("/api/runs/history", async () => ({
+  runs: runHistoryOrder.flatMap((runId) => {
+    const detail = runHistory.get(runId);
+    return detail ? [detail.item] : [];
+  })
+}));
+
+app.get<{ Params: RunHistoryParams }>("/api/runs/history/:runId", async (request, reply) => {
+  const detail = runHistory.get(request.params.runId);
+  if (!detail) {
+    return reply.code(404).send({
+      error: {
+        code: "run_history_not_found",
+        message: "Run history entry was not found."
+      }
+    });
+  }
+
+  return detail;
+});
+
 app.post<{ Body: RunRequest }>("/api/runs", async (request, reply) => {
   if (typeof request.body?.prompt !== "string" || !request.body.prompt.trim()) {
     return reply.code(400).send({ error: "prompt is required" });
   }
 
   try {
-    const result = await orchestrateRun(await prepareRunRequest(request.body), providers);
+    const runRequest = await prepareRunRequest(request.body);
+    const result = await orchestrateRun(runRequest, providers);
+    recordRunHistory(result, runRequest);
 
     return result;
   } catch (error) {
@@ -204,6 +318,9 @@ app.post<{ Body: RunRequest }>("/api/runs/stream", async (request, reply) => {
         return;
       }
       writeSseEvent(reply.raw, event);
+      if (event.type === "run_done") {
+        recordRunHistory(event.run, runRequest);
+      }
     }
   } catch (error) {
     if (!reply.raw.destroyed && !abortController.signal.aborted) {

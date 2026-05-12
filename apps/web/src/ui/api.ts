@@ -2,6 +2,8 @@ import type { RunRequest, RunResult, RunStreamEvent } from "@webcode/core";
 import type {
   BootstrapPayload,
   RoutePreviewPayload,
+  RunHistoryDetailPayload,
+  RunHistoryPayload,
   WorkspaceAuditPayload,
   WorkspaceBootstrapPayload,
   WorkspaceFilePayload,
@@ -55,6 +57,14 @@ export async function createRun(request: RunRequest) {
       body: JSON.stringify(request)
     })
   );
+}
+
+export async function loadRunHistory() {
+  return parseJson<RunHistoryPayload>(await fetch("/api/runs/history"));
+}
+
+export async function loadRunHistoryDetail(runId: string) {
+  return parseJson<RunHistoryDetailPayload>(await fetch(`/api/runs/history/${encodeURIComponent(runId)}`));
 }
 
 export async function previewRoute(request: Partial<RunRequest>) {

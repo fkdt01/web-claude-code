@@ -134,10 +134,50 @@ button {
 }
 
 .history-item {
-  display: block;
+  display: grid;
+  gap: 2px;
+  min-height: 46px;
+  overflow: hidden;
+}
+
+.history-item.active {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.history-item:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+.history-item strong,
+.history-item span,
+.history-empty,
+.history-error {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.history-item strong {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.history-item span,
+.history-empty,
+.history-error {
+  color: #a6a6a0;
+  font-size: 12px;
+}
+
+.history-empty,
+.history-error {
+  padding: 6px 10px;
+}
+
+.history-error {
+  color: #ffb4a6;
 }
 
 .sidebar-foot {

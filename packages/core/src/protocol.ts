@@ -138,6 +138,25 @@ export type RunResult = {
   audit: AuditEvent[];
 };
 
+export type RunHistoryItem = {
+  id: string;
+  status: "completed";
+  prompt: string;
+  mode: OrchestrationMode;
+  startedAt: string;
+  completedAt: string;
+  selectedModels: string[];
+  responseCount: number;
+  totalTokens: number;
+  finalPreview: string;
+  estimatedCostUsd?: number;
+};
+
+export type RunHistoryDetail = {
+  item: RunHistoryItem;
+  run: RunResult;
+};
+
 export type RoutePreviewModel = {
   key: string;
   provider: ProviderId;
