@@ -166,12 +166,18 @@ export type RoutePreviewModel = {
   label: string;
   role: AgentRole;
   available: boolean;
+  estimatedInputTokens: number;
+  estimatedMaxTokens: number;
+  estimatedInputCostUsd?: number;
   estimatedMaxOutputCostUsd?: number;
+  estimatedMaxCostUsd?: number;
 };
 
 export type RoutePreview = {
   mode: OrchestrationMode;
   maxOutputTokens: number;
+  estimatedInputTokens: number;
+  estimatedMaxTokens: number;
   requestedModels: string[];
   selectedModels: string[];
   unknownModels: string[];
@@ -180,7 +186,9 @@ export type RoutePreview = {
   unknownCostCount: number;
   fallbackUsed: boolean;
   models: RoutePreviewModel[];
+  estimatedInputCostUsd?: number;
   estimatedMaxOutputCostUsd?: number;
+  estimatedMaxCostUsd?: number;
 };
 
 export type RunStreamEvent =

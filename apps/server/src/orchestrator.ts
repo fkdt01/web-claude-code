@@ -31,6 +31,7 @@ const BEARER_TOKEN_PATTERN = /(bearer\s+)[a-z0-9._-]+/gi;
 const OPENAI_KEY_PATTERN = /sk-[a-z0-9_-]+/gi;
 const MAX_ROUTE_AUDIT_KEYS = 8;
 const MAX_ROUTE_AUDIT_KEY_LENGTH = 120;
+const ROUGH_TOKEN_CHARS = 4;
 
 const maskSensitiveText = (value: string) =>
   value
@@ -94,12 +95,48 @@ function routeEntries(request: RunRequest, providers: ProviderAdapter[]) {
 }
 
 function estimateMaxOutputCostUsd(entry: ModelEntry, maxOutputTokens: number) {
-  const outputPerMillion = entry.model.cost?.currency && entry.model.cost.currency !== "USD"
-    ? undefined
-    : entry.model.cost?.outputPerMillion;
+  const outputPerMillion = usdCostRate(entry.model.cost, "outputPerMillion");
   if (outputPerMillion === undefined || !Number.isFinite(outputPerMillion) || outputPerMillion < 0) return undefined;
 
   const estimated = (maxOutputTokens * outputPerMillion) / 1_000_000;
+  return Number.isFinite(estimated) ? Number(estimated.toFixed(8)) : undefined;
+}
+
+function estimateTextTokens(value: string) {
+  return Math.max(1, Math.ceil(value.length / ROUGH_TOKEN_CHARS));
+}
+
+function estimateRouteInputTokens(request: RunRequest) {
+  const systemText = request.workspaceContext
+    ? `${systemPrompt}\n\n${formatWorkspaceContext(request.workspaceContext)}`
+    : systemPrompt;
+  return estimateTextTokens(`${systemText}\n\n${request.prompt}`);
+}
+
+function usdCostRate(cost: ModelDescriptor["cost"], key: "inputPerMillion" | "outputPerMillion") {
+  if (!cost || (cost.currency && cost.currency !== "USD")) return undefined;
+  const rate = cost[key];
+  return rate !== undefined && Number.isFinite(rate) && rate >= 0 ? rate : undefined;
+}
+
+function estimateInputCostUsd(entry: ModelEntry, estimatedInputTokens: number) {
+  const inputPerMillion = usdCostRate(entry.model.cost, "inputPerMillion");
+  if (inputPerMillion === undefined) return undefined;
+
+  const estimated = (estimatedInputTokens * inputPerMillion) / 1_000_000;
+  return Number.isFinite(estimated) ? Number(estimated.toFixed(8)) : undefined;
+}
+
+function estimateMaxCostUsd(entry: ModelEntry, estimatedInputTokens: number, maxOutputTokens: number) {
+  const cost = entry.model.cost;
+  if (!cost || (cost.currency && cost.currency !== "USD")) return undefined;
+  const inputPerMillion = usdCostRate(cost, "inputPerMillion");
+  const outputPerMillion = usdCostRate(cost, "outputPerMillion");
+  if (inputPerMillion === undefined || outputPerMillion === undefined) return undefined;
+
+  const estimated =
+    (estimatedInputTokens * inputPerMillion) / 1_000_000 +
+    (maxOutputTokens * outputPerMillion) / 1_000_000;
   return Number.isFinite(estimated) ? Number(estimated.toFixed(8)) : undefined;
 }
 
@@ -125,10 +162,11 @@ function routeAuditEvent(request: RunRequest, providers: ProviderAdapter[]) {
   const details = [
     `实际模型：${route.selectedModels.length ? formatRouteKeysForAudit(route.selectedModels) : "无可用模型"}`,
     route.fallbackUsed ? "已 fallback 到 mock" : "按选择路由",
+    `输入粗估：${route.estimatedInputTokens} tokens`,
     `输出上限：${route.maxOutputTokens} tokens`,
     route.unknownCostCount
       ? `成本未配置：${formatRouteKeysForAudit(route.unknownCostModels)}`
-      : `最大输出成本：${formatCostForAudit(route.estimatedMaxOutputCostUsd)}`,
+      : `预估最大总成本：${formatCostForAudit(route.estimatedMaxCostUsd)}`,
     route.unavailableModels.length || route.unknownModels.length
       ? `已跳过：${formatRouteKeysForAudit([...route.unavailableModels, ...route.unknownModels])}`
       : ""
@@ -543,9 +581,13 @@ export function previewRoute(request: RunRequest, providers: ProviderAdapter[]):
     .filter((entry) => requestedModels.includes(entry.key) && !entry.model.available)
     .map((entry) => entry.key);
   const maxOutputTokens = request.maxOutputTokens ?? 1200;
+  const estimatedInputTokens = estimateRouteInputTokens(request);
+  const estimatedMaxTokens = estimatedInputTokens + maxOutputTokens;
   const { entries, fallbackUsed } = routeEntries(request, providers);
   const models = entries.map((entry) => {
+    const estimatedInputCostUsd = estimateInputCostUsd(entry, estimatedInputTokens);
     const estimatedMaxOutputCostUsd = estimateMaxOutputCostUsd(entry, maxOutputTokens);
+    const estimatedMaxCostUsd = estimateMaxCostUsd(entry, estimatedInputTokens, maxOutputTokens);
     return {
       key: entry.key,
       provider: entry.model.provider,
@@ -553,16 +595,34 @@ export function previewRoute(request: RunRequest, providers: ProviderAdapter[]):
       label: entry.model.label,
       role: entry.model.role,
       available: entry.model.available,
-      ...(estimatedMaxOutputCostUsd !== undefined ? { estimatedMaxOutputCostUsd } : {})
+      estimatedInputTokens,
+      estimatedMaxTokens,
+      ...(estimatedInputCostUsd !== undefined ? { estimatedInputCostUsd } : {}),
+      ...(estimatedMaxOutputCostUsd !== undefined ? { estimatedMaxOutputCostUsd } : {}),
+      ...(estimatedMaxCostUsd !== undefined ? { estimatedMaxCostUsd } : {})
     };
   });
-  const costValues = models
+  const inputCostValues = models
+    .map((model) => model.estimatedInputCostUsd)
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  const outputCostValues = models
     .map((model) => model.estimatedMaxOutputCostUsd)
     .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  const costValues = models
+    .map((model) => model.estimatedMaxCostUsd)
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
   const unknownCostModels = models
-    .filter((model) => model.estimatedMaxOutputCostUsd === undefined)
+    .filter((model) => model.estimatedMaxCostUsd === undefined)
     .map((model) => model.key);
+  const estimatedInputCostUsd =
+    models.length > 0 && inputCostValues.length === models.length
+      ? Number(inputCostValues.reduce((sum, value) => sum + value, 0).toFixed(8))
+      : undefined;
   const estimatedMaxOutputCostUsd =
+    models.length > 0 && outputCostValues.length === models.length
+      ? Number(outputCostValues.reduce((sum, value) => sum + value, 0).toFixed(8))
+      : undefined;
+  const estimatedMaxCostUsd =
     models.length > 0 && costValues.length === models.length
       ? Number(costValues.reduce((sum, value) => sum + value, 0).toFixed(8))
       : undefined;
@@ -570,6 +630,8 @@ export function previewRoute(request: RunRequest, providers: ProviderAdapter[]):
   return {
     mode: request.mode,
     maxOutputTokens,
+    estimatedInputTokens,
+    estimatedMaxTokens,
     requestedModels,
     selectedModels: entries.map((entry) => entry.key),
     unknownModels,
@@ -578,7 +640,9 @@ export function previewRoute(request: RunRequest, providers: ProviderAdapter[]):
     unknownCostCount: unknownCostModels.length,
     fallbackUsed,
     models,
-    ...(estimatedMaxOutputCostUsd !== undefined ? { estimatedMaxOutputCostUsd } : {})
+    ...(estimatedInputCostUsd !== undefined ? { estimatedInputCostUsd } : {}),
+    ...(estimatedMaxOutputCostUsd !== undefined ? { estimatedMaxOutputCostUsd } : {}),
+    ...(estimatedMaxCostUsd !== undefined ? { estimatedMaxCostUsd } : {})
   };
 }
 

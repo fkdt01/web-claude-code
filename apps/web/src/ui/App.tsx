@@ -713,25 +713,29 @@ export function App() {
     routePreviewRequestRef.current = requestId;
     setRoutePreviewLoading(true);
     setRoutePreviewError(null);
-    previewRoute({
-      prompt: "",
-      mode,
-      selectedModels,
-      maxOutputTokens
-    })
-      .then((preview) => {
-        if (routePreviewRequestRef.current !== requestId) return;
-        setRoutePreview(preview);
+    const timer = window.setTimeout(() => {
+      previewRoute({
+        prompt,
+        mode,
+        selectedModels,
+        maxOutputTokens
       })
-      .catch((error) => {
-        if (routePreviewRequestRef.current !== requestId) return;
-        setRoutePreview(null);
-        setRoutePreviewError(maskSensitiveText(error instanceof Error ? error.message : "路由预览失败"));
-      })
-      .finally(() => {
-        if (routePreviewRequestRef.current === requestId) setRoutePreviewLoading(false);
-      });
-  }, [bootstrap, mode, selectedModels, maxOutputTokens]);
+        .then((preview) => {
+          if (routePreviewRequestRef.current !== requestId) return;
+          setRoutePreview(preview);
+        })
+        .catch((error) => {
+          if (routePreviewRequestRef.current !== requestId) return;
+          setRoutePreview(null);
+          setRoutePreviewError(maskSensitiveText(error instanceof Error ? error.message : "路由预览失败"));
+        })
+        .finally(() => {
+          if (routePreviewRequestRef.current === requestId) setRoutePreviewLoading(false);
+        });
+    }, 250);
+
+    return () => window.clearTimeout(timer);
+  }, [bootstrap, mode, selectedModels, maxOutputTokens, prompt]);
 
   async function refreshRunHistory() {
     const requestId = runHistoryRequestRef.current + 1;
@@ -1326,7 +1330,7 @@ export function App() {
                       ? `${routePreview.selectedModels.length} 个模型 · ${
                           routePreview.unknownCostCount
                             ? `${routePreview.unknownCostCount} 个成本未配置`
-                            : formatUsd(routePreview.estimatedMaxOutputCostUsd)
+                            : formatUsd(routePreview.estimatedMaxCostUsd)
                         }`
                       : "未就绪"}
                 </span>
@@ -1356,13 +1360,16 @@ export function App() {
                   <div className="route-flags">
                     <span>{routePreview.mode}</span>
                     <span>{routePreview.fallbackUsed ? "fallback mock" : "按选择路由"}</span>
+                    <span>输入粗估 {routePreview.estimatedInputTokens} tokens</span>
                     <span>{routePreview.maxOutputTokens} max tokens</span>
+                    <span>预估总计 ≤ {routePreview.estimatedMaxTokens} tokens</span>
                     {routePreview.unknownCostCount ? <span>{routePreview.unknownCostCount} 个成本未配置</span> : null}
                   </div>
                   <div className="route-models">
                     {routePreview.models.map((model) => (
                       <span key={model.key}>
                         {model.provider}/{model.model} · {model.role}
+                        {model.estimatedMaxCostUsd !== undefined ? ` · ≤${formatUsd(model.estimatedMaxCostUsd)}` : ""}
                       </span>
                     ))}
                   </div>
@@ -1375,6 +1382,7 @@ export function App() {
                   {routePreview.unknownCostModels.length ? (
                     <p className="route-note">成本未配置：{routePreview.unknownCostModels.join("、")}</p>
                   ) : null}
+                  {workspace ? <p className="route-note">成本为运行前粗估；工作区上下文未计入预览。</p> : null}
                 </>
               ) : null}
             </div>
