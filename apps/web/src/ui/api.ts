@@ -1,10 +1,23 @@
 import type { RunRequest, RunResult } from "@webcode/core";
-import type { BootstrapPayload } from "./types";
+import type {
+  BootstrapPayload,
+  WorkspaceAuditPayload,
+  WorkspaceBootstrapPayload,
+  WorkspaceFilePayload,
+  WorkspaceTreePayload
+} from "./types";
 
 async function parseJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || `Request failed with ${response.status}`);
+    let structuredMessage: string | undefined;
+    try {
+      const payload = JSON.parse(text) as { error?: { code?: string; message?: string } };
+      structuredMessage = payload.error?.message || payload.error?.code;
+    } catch {
+      // Fall through to the generic response below when the body is not JSON.
+    }
+    throw new Error(structuredMessage || text || `请求失败：${response.status}`);
   }
 
   return response.json() as Promise<T>;
@@ -22,4 +35,35 @@ export async function createRun(request: RunRequest) {
       body: JSON.stringify(request)
     })
   );
+}
+
+export async function loadWorkspaces() {
+  return parseJson<WorkspaceBootstrapPayload>(await fetch("/api/workspaces"));
+}
+
+export async function registerWorkspace(root: string, name?: string) {
+  return parseJson<{ workspace: WorkspaceBootstrapPayload["workspaces"][number] }>(
+    await fetch("/api/workspaces", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        root,
+        ...(name ? { name } : {})
+      })
+    })
+  );
+}
+
+export async function loadWorkspaceTree(workspaceId: string, path = ".", depth = 2) {
+  const query = new URLSearchParams({ path, depth: String(depth) });
+  return parseJson<WorkspaceTreePayload>(await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/tree?${query}`));
+}
+
+export async function readWorkspaceFile(workspaceId: string, path: string) {
+  const query = new URLSearchParams({ path });
+  return parseJson<WorkspaceFilePayload>(await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/files?${query}`));
+}
+
+export async function loadWorkspaceAudit(workspaceId: string) {
+  return parseJson<WorkspaceAuditPayload>(await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/audit`));
 }

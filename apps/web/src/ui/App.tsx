@@ -5,7 +5,9 @@ import {
   ChevronDown,
   Clock3,
   Code2,
+  FileText,
   FileCode2,
+  FolderTree,
   KeyRound,
   Layers3,
   MessageSquarePlus,
@@ -18,9 +20,25 @@ import {
   TriangleAlert,
   XCircle
 } from "lucide-react";
-import type { ModelDescriptor, OrchestrationMode, RunRequest } from "@webcode/core";
+import type {
+  ModelDescriptor,
+  OrchestrationMode,
+  RunRequest,
+  WorkspaceAuditEvent,
+  WorkspaceDescriptor,
+  WorkspaceFileRead,
+  WorkspaceTreeEntry
+} from "@webcode/core";
 import { modelKey } from "@webcode/core";
-import { createRun, loadBootstrap } from "./api";
+import {
+  createRun,
+  loadBootstrap,
+  loadWorkspaceAudit,
+  loadWorkspaceTree,
+  loadWorkspaces,
+  readWorkspaceFile,
+  registerWorkspace
+} from "./api";
 import type { BootstrapPayload, ProviderPayload, UiRunState } from "./types";
 
 const DEFAULT_PROMPT =
@@ -106,6 +124,44 @@ function ModeButton({
   );
 }
 
+function TreeNode({
+  entry,
+  selectedPath,
+  onOpen
+}: {
+  entry: WorkspaceTreeEntry;
+  selectedPath: string | undefined;
+  onOpen: (entry: WorkspaceTreeEntry) => void;
+}) {
+  const isFile = entry.kind === "file";
+  const isSelected = selectedPath === entry.path;
+
+  return (
+    <div className="tree-node">
+      <button
+        className={`tree-item ${isSelected ? "active" : ""}`}
+        type="button"
+        onClick={() => {
+          if (isFile) onOpen(entry);
+        }}
+        disabled={!isFile}
+        title={entry.path}
+      >
+        {isFile ? <FileText size={14} /> : <FolderTree size={14} />}
+        <span>{entry.name}</span>
+        {entry.size ? <small>{Math.ceil(entry.size / 1024)} KB</small> : null}
+      </button>
+      {entry.children?.length ? (
+        <div className="tree-children">
+          {entry.children.map((child) => (
+            <TreeNode key={child.path} entry={child} selectedPath={selectedPath} onOpen={onOpen} />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function App() {
   const [bootstrap, setBootstrap] = useState<BootstrapPayload | null>(null);
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
@@ -113,6 +169,12 @@ export function App() {
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
   const [runState, setRunState] = useState<UiRunState>({ status: "idle" });
   const [showInspector, setShowInspector] = useState(true);
+  const [workspace, setWorkspace] = useState<WorkspaceDescriptor | null>(null);
+  const [workspaceTree, setWorkspaceTree] = useState<WorkspaceTreeEntry | null>(null);
+  const [workspaceFile, setWorkspaceFile] = useState<WorkspaceFileRead | null>(null);
+  const [workspaceAudit, setWorkspaceAudit] = useState<WorkspaceAuditEvent[]>([]);
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+  const [workspaceLoading, setWorkspaceLoading] = useState(false);
 
   useEffect(() => {
     loadBootstrap()
@@ -130,6 +192,38 @@ export function App() {
           error: error instanceof Error ? error.message : "加载模型配置失败"
         });
       });
+  }, []);
+
+  useEffect(() => {
+    async function bootstrapWorkspace() {
+      setWorkspaceLoading(true);
+      setWorkspaceError(null);
+      try {
+        const payload = await loadWorkspaces();
+        const current =
+          payload.workspaces[0] ??
+          (payload.allowedRoots[0]
+            ? (await registerWorkspace(payload.allowedRoots[0], "默认工作区")).workspace
+            : undefined);
+
+        if (!current) {
+          setWorkspaceError("后端没有配置可注册的工作区根目录。");
+          return;
+        }
+
+        const treePayload = await loadWorkspaceTree(current.id, ".", 2);
+        const auditPayload = await loadWorkspaceAudit(current.id);
+        setWorkspace(current);
+        setWorkspaceTree(treePayload.root);
+        setWorkspaceAudit(auditPayload.audit);
+      } catch (error) {
+        setWorkspaceError(error instanceof Error ? error.message : "加载工作区失败");
+      } finally {
+        setWorkspaceLoading(false);
+      }
+    }
+
+    void bootstrapWorkspace();
   }, []);
 
   const models = useMemo(() => flattenModels(bootstrap?.providers ?? []), [bootstrap]);
@@ -159,6 +253,23 @@ export function App() {
 
   function toggleModel(key: string) {
     setSelectedModels((current) => (current.includes(key) ? current.filter((item) => item !== key) : [...current, key]));
+  }
+
+  async function openWorkspaceFile(entry: WorkspaceTreeEntry) {
+    if (!workspace || entry.kind !== "file") return;
+
+    setWorkspaceLoading(true);
+    setWorkspaceError(null);
+    try {
+      const filePayload = await readWorkspaceFile(workspace.id, entry.path);
+      const auditPayload = await loadWorkspaceAudit(workspace.id);
+      setWorkspaceFile(filePayload.file);
+      setWorkspaceAudit(auditPayload.audit);
+    } catch (error) {
+      setWorkspaceError(error instanceof Error ? error.message : "读取文件失败");
+    } finally {
+      setWorkspaceLoading(false);
+    }
   }
 
   return (
@@ -310,19 +421,60 @@ export function App() {
             </div>
           </section>
 
+          <section className="inspector-card workspace-card">
+            <div className="card-title">
+              <FileCode2 size={17} />
+              <h2>工作区</h2>
+            </div>
+            <div className="workspace-head">
+              <strong>{workspace?.name ?? "未注册"}</strong>
+              <span>{workspaceLoading ? "同步中" : "只读模式"}</span>
+            </div>
+            {workspaceError ? (
+              <div className="workspace-error">
+                <TriangleAlert size={15} />
+                <span>{workspaceError}</span>
+              </div>
+            ) : null}
+            <div className="workspace-browser">
+              <div className="tree-panel">
+                {workspaceTree ? (
+                  <TreeNode entry={workspaceTree} selectedPath={workspaceFile?.path} onOpen={openWorkspaceFile} />
+                ) : (
+                  <p className="empty">正在加载文件树。</p>
+                )}
+              </div>
+              <div className="file-preview">
+                <div className="file-preview-title">
+                  <strong>{workspaceFile?.path ?? "选择文件预览"}</strong>
+                  {workspaceFile ? <span>{workspaceFile.size} bytes</span> : null}
+                </div>
+                <pre>{workspaceFile?.content ?? "文件内容会以只读方式显示在这里。"}</pre>
+              </div>
+            </div>
+          </section>
+
           <section className="inspector-card">
             <div className="card-title">
               <ShieldCheck size={17} />
               <h2>审计</h2>
             </div>
             <div className="audit-list">
+              {workspaceAudit.slice(-5).map((event) => (
+                <div className={`audit-event ${event.status === "denied" ? "blocked" : event.status}`} key={event.id}>
+                  <strong>{event.action}</strong>
+                  <span>
+                    {event.target ?? "."} · {event.detail}
+                  </span>
+                </div>
+              ))}
               {(result?.audit ?? []).map((event) => (
                 <div className={`audit-event ${event.level}`} key={event.id}>
                   <strong>{event.label}</strong>
                   <span>{event.detail}</span>
                 </div>
               ))}
-              {!result ? <p className="empty">运行任务后会记录模型、工具和策略事件。</p> : null}
+              {!result && !workspaceAudit.length ? <p className="empty">运行任务后会记录模型、工具和策略事件。</p> : null}
             </div>
             <div className="token-line">上次 token：{totalTokens}</div>
           </section>

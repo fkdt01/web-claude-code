@@ -535,6 +535,128 @@ button {
   background: #226f6b;
 }
 
+.workspace-card {
+  display: grid;
+  gap: 10px;
+}
+
+.workspace-head,
+.file-preview-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.workspace-head strong,
+.file-preview-title strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-head span,
+.file-preview-title span {
+  flex: 0 0 auto;
+  color: #6b716d;
+  font-size: 12px;
+}
+
+.workspace-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid #e4b1a5;
+  border-radius: 8px;
+  color: #8f3428;
+  background: #fff2ee;
+  font-size: 13px;
+}
+
+.workspace-browser {
+  display: grid;
+  gap: 10px;
+}
+
+.tree-panel {
+  max-height: 260px;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid #e5e2db;
+  border-radius: 8px;
+  background: #f8f7f3;
+}
+
+.tree-node {
+  display: grid;
+  gap: 3px;
+}
+
+.tree-children {
+  display: grid;
+  gap: 3px;
+  margin-left: 12px;
+  padding-left: 8px;
+  border-left: 1px solid #e5e2db;
+}
+
+.tree-item {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 30px;
+  padding: 4px 7px;
+  border-radius: 6px;
+  color: #303331;
+  background: transparent;
+  text-align: left;
+}
+
+.tree-item:not(:disabled):hover,
+.tree-item.active {
+  background: #e8f4f1;
+}
+
+.tree-item:disabled {
+  cursor: default;
+  color: #6b716d;
+}
+
+.tree-item span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tree-item small {
+  color: #8b918d;
+  font-size: 11px;
+}
+
+.file-preview {
+  display: grid;
+  gap: 8px;
+}
+
+.file-preview pre {
+  max-height: 260px;
+  margin: 0;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid #e5e2db;
+  border-radius: 8px;
+  color: #1d1f1f;
+  background: #fbfaf7;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
 @media (max-width: 1200px) {
   .chat-shell,
   .chat-shell.with-inspector {
@@ -542,7 +664,16 @@ button {
   }
 
   .inspector {
-    display: none;
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    max-height: none;
+    border-top: 1px solid #e5e2db;
+    border-left: 0;
+  }
+
+  .workspace-card {
+    grid-column: 1 / -1;
   }
 }
 
@@ -558,6 +689,10 @@ button {
 
   .mode-strip {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .inspector {
+    grid-template-columns: 1fr;
   }
 
   .conversation {

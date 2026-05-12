@@ -1,4 +1,13 @@
-import type { ModelDescriptor, OrchestrationMode, RunResult, ToolSpec } from "@webcode/core";
+import type {
+  ModelDescriptor,
+  OrchestrationMode,
+  RunResult,
+  ToolSpec,
+  WorkspaceAuditEvent,
+  WorkspaceDescriptor,
+  WorkspaceFileRead,
+  WorkspaceTreeEntry
+} from "@webcode/core";
 
 export type ProviderPayload = {
   id: string;
@@ -17,3 +26,21 @@ export type UiRunState =
   | { status: "loading"; result?: RunResult; error?: undefined }
   | { status: "error"; result?: RunResult; error: string }
   | { status: "done"; result: RunResult; error?: undefined };
+
+export type WorkspaceBootstrapPayload = {
+  allowedRoots: string[];
+  workspaces: WorkspaceDescriptor[];
+};
+
+export type WorkspaceTreePayload = {
+  workspace: WorkspaceDescriptor;
+  root: WorkspaceTreeEntry;
+};
+
+export type WorkspaceFilePayload = {
+  file: WorkspaceFileRead;
+};
+
+export type WorkspaceAuditPayload = {
+  audit: WorkspaceAuditEvent[];
+};

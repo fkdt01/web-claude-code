@@ -12,6 +12,7 @@ import type {
 } from "@webcode/core";
 
 const DEFAULT_EXCLUDED_NAMES = new Set([".git", "node_modules", "dist", ".logs", ".vite"]);
+const SENSITIVE_FILE_NAMES = new Set([".env", ".env.local", ".env.production", ".env.development"]);
 const MAX_READ_BYTES = 256 * 1024;
 const MAX_SEARCH_FILE_BYTES = 1024 * 1024;
 const MAX_TREE_DEPTH = 6;
@@ -332,6 +333,9 @@ export class WorkspaceService {
     if (expected === "file" && !stat.isFile()) {
       throw new WorkspaceError("path_not_file", "Path must point to a file.");
     }
+    if (expected === "file" && SENSITIVE_FILE_NAMES.has(path.basename(realPath))) {
+      throw new WorkspaceError("sensitive_file_not_readable", "Sensitive files cannot be read through the workspace API.", 403);
+    }
     if (expected === "directory" && !stat.isDirectory()) {
       throw new WorkspaceError("path_not_directory", "Path must point to a directory.");
     }
@@ -368,7 +372,7 @@ export class WorkspaceService {
       return left.name.localeCompare(right.name);
     })) {
       if (counter.value >= MAX_TREE_ENTRIES) break;
-      if (DEFAULT_EXCLUDED_NAMES.has(entry.name)) continue;
+      if (DEFAULT_EXCLUDED_NAMES.has(entry.name) || SENSITIVE_FILE_NAMES.has(entry.name)) continue;
       children.push(await this.buildTree(workspace, path.join(entryPath, entry.name), depth - 1, counter));
     }
 
@@ -389,7 +393,7 @@ export class WorkspaceService {
       }
 
       for (const entry of entries) {
-        if (DEFAULT_EXCLUDED_NAMES.has(entry.name)) continue;
+        if (DEFAULT_EXCLUDED_NAMES.has(entry.name) || SENSITIVE_FILE_NAMES.has(entry.name)) continue;
         const entryPath = path.join(directory, entry.name);
         if (entry.isSymbolicLink()) continue;
         if (entry.isDirectory()) {

@@ -6,7 +6,7 @@
 
 ## 当前包含
 
-- `apps/web`：React 中文工作台，布局参考 ChatGPT 的左侧栏 + 中央对话 + 底部输入框。
+- `apps/web`：React 中文工作台，布局参考 ChatGPT 的左侧栏 + 中央对话 + 底部输入框，并已接入只读工作区文件树和文件预览。
 - `apps/server`：Fastify API，包含 Provider Registry、模型适配器、编排器和策略接口。
 - `packages/core`：共享协议、模型事件、工具规格和安全策略类型。
 - `docs/project-breakdown.md`：对参考项目的模块拆解和 Web 化映射。
