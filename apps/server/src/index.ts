@@ -48,6 +48,12 @@ type WorkspacePatchApplyBody = WorkspacePatchPreviewBody & {
   expectedHash?: string;
 };
 
+type WorkspaceShellRunBody = {
+  command?: string;
+  cwd?: string;
+  timeoutMs?: number;
+};
+
 function sendWorkspaceError(reply: { code(statusCode: number): { send(payload: unknown): unknown } }, error: unknown) {
   if (error instanceof WorkspaceError) {
     return reply.code(error.statusCode).send({
@@ -308,6 +314,31 @@ app.post<{ Params: WorkspaceParams; Body: WorkspacePatchApplyBody }>(
         request.body.path,
         request.body.newContent,
         request.body.expectedHash
+      );
+    } catch (error) {
+      return sendWorkspaceError(reply, error);
+    }
+  }
+);
+
+app.post<{ Params: WorkspaceParams; Body: WorkspaceShellRunBody }>(
+  "/api/workspaces/:workspaceId/shell",
+  async (request, reply) => {
+    if (!request.body?.command?.trim()) {
+      return reply.code(400).send({
+        error: {
+          code: "shell_command_required",
+          message: "shell command is required"
+        }
+      });
+    }
+
+    try {
+      return await workspaceService.runShell(
+        request.params.workspaceId,
+        request.body.command,
+        request.body.cwd ?? ".",
+        request.body.timeoutMs
       );
     } catch (error) {
       return sendWorkspaceError(reply, error);

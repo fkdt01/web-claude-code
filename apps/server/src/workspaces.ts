@@ -2,6 +2,7 @@ import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import type {
   WorkspaceAuditEvent,
   WorkspaceDescriptor,
@@ -9,10 +10,12 @@ import type {
   WorkspaceFileRead,
   WorkspacePatchApplyResult,
   WorkspacePatchPreview,
+  WorkspaceShellRunResult,
   WorkspaceSearchMatch,
   WorkspaceSearchResult,
   WorkspaceTreeEntry
 } from "@webcode/core";
+import { classifyShellCommand } from "@webcode/core";
 
 const DEFAULT_EXCLUDED_NAMES = new Set([".git", "node_modules", "dist", ".logs", ".vite"]);
 const SENSITIVE_FILE_NAMES = new Set([".env", ".env.local", ".env.production", ".env.development"]);
@@ -27,6 +30,19 @@ const MAX_SEARCH_FILES = 2_000;
 const MAX_QUERY_LENGTH = 200;
 const MAX_DIFF_LINES = 800;
 const DIFF_CONTEXT_LINES = 3;
+const MAX_SHELL_COMMAND_LENGTH = 300;
+const MAX_SHELL_OUTPUT_BYTES = 64 * 1024;
+const DEFAULT_SHELL_TIMEOUT_MS = 5_000;
+const MAX_SHELL_TIMEOUT_MS = 15_000;
+const SHELL_CONTROL_PATTERN = /[\n\r|&;<>()`$]/;
+const SECRET_VALUE_PATTERN = /((?:api[_-]?key|secret|token|password|passwd)\s*[:=]\s*)[^\s'",;]+/gi;
+const BEARER_TOKEN_PATTERN = /(bearer\s+)[a-z0-9._-]+/gi;
+const OPENAI_KEY_PATTERN = /sk-[a-z0-9_-]+/gi;
+const TRUSTED_EXECUTABLE_DIRS = ["/usr/bin", "/bin"];
+const TRUSTED_EXECUTABLES: Record<string, string[]> = {
+  ls: ["/usr/bin/ls", "/bin/ls"],
+  pwd: ["/usr/bin/pwd", "/bin/pwd"]
+};
 
 type WorkspaceRecord = WorkspaceDescriptor & {
   audit: WorkspaceAuditEvent[];
@@ -76,6 +92,174 @@ const isPathLikeInputSafe = (input: string) => {
 
 const clampInteger = (value: number, min: number, max: number) => Math.min(max, Math.max(min, Math.floor(value)));
 const contentHash = (content: string) => createHash("sha256").update(content, "utf8").digest("hex");
+const maskSensitiveText = (value: string) =>
+  value
+    .replace(SECRET_VALUE_PATTERN, "$1[redacted]")
+    .replace(BEARER_TOKEN_PATTERN, "$1[redacted]")
+    .replace(OPENAI_KEY_PATTERN, "[redacted]");
+
+function executableName(input: string) {
+  return path.basename(input).toLowerCase().replace(/\.exe$/i, "");
+}
+
+function isSimpleOption(input: string) {
+  return /^-{1,2}[a-zA-Z0-9][a-zA-Z0-9=._/-]*$/.test(input) && !input.includes("..");
+}
+
+function parseCommand(command: string) {
+  if (SHELL_CONTROL_PATTERN.test(command)) {
+    throw new WorkspaceError("shell_control_operator_denied", "Shell control operators are not allowed.", 403);
+  }
+
+  const tokens: string[] = [];
+  let current = "";
+  let quote: '"' | "'" | undefined;
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index];
+    if (!char) continue;
+    if (quote) {
+      if (char === quote) {
+        quote = undefined;
+        continue;
+      }
+      current += char;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (/\s/.test(char)) {
+      if (current) {
+        tokens.push(current);
+        current = "";
+      }
+      continue;
+    }
+    current += char;
+  }
+
+  if (quote) {
+    throw new WorkspaceError("shell_quote_unclosed", "Shell command contains an unclosed quote.", 400);
+  }
+  if (current) tokens.push(current);
+  if (!tokens.length) {
+    throw new WorkspaceError("shell_command_required", "Shell command is required.");
+  }
+  if (tokens[0]?.includes("/") || tokens[0]?.includes("\\")) {
+    throw new WorkspaceError("shell_executable_path_denied", "Shell executable paths are not allowed.", 403);
+  }
+
+  return tokens;
+}
+
+function validateReadOnlyCommand(tokens: string[]) {
+  const executable = executableName(tokens[0] ?? "");
+  const args = tokens.slice(1);
+
+  if (executable === "pwd") return args.length === 0;
+
+  if (executable === "ls") {
+    return args.length <= 5 && args.every((arg) => arg.startsWith("-") && isSimpleOption(arg) && !/[R]/.test(arg));
+  }
+
+  return false;
+}
+
+async function resolveTrustedExecutable(input: string) {
+  const executable = executableName(input);
+  const candidates = TRUSTED_EXECUTABLES[executable] ?? [];
+  for (const candidate of candidates) {
+    try {
+      const realPath = await fs.realpath(candidate);
+      if (!TRUSTED_EXECUTABLE_DIRS.includes(path.dirname(realPath))) continue;
+      await fs.access(realPath, fsConstants.X_OK);
+      return realPath;
+    } catch {
+      // Try the next trusted system path.
+    }
+  }
+
+  throw new WorkspaceError("shell_executable_unavailable", "Allowlisted executable is unavailable on this Linux backend.", 501);
+}
+
+function shellEnvironment() {
+  const env: NodeJS.ProcessEnv = {
+    PATH: TRUSTED_EXECUTABLE_DIRS.join(":"),
+    CI: "1",
+    NO_COLOR: "1",
+    GIT_PAGER: ""
+  };
+  return env;
+}
+
+function appendLimitedOutput(current: string, chunk: Buffer, state: { truncated: boolean }) {
+  if (Buffer.byteLength(current, "utf8") >= MAX_SHELL_OUTPUT_BYTES) {
+    state.truncated = true;
+    return current;
+  }
+
+  const next = current + chunk.toString("utf8");
+  if (Buffer.byteLength(next, "utf8") <= MAX_SHELL_OUTPUT_BYTES) return next;
+
+  state.truncated = true;
+  return next.slice(0, MAX_SHELL_OUTPUT_BYTES);
+}
+
+async function executeCommand(executablePath: string, args: string[], cwd: string, timeoutMs: number) {
+  return new Promise<Omit<WorkspaceShellRunResult, "workspaceId" | "command" | "cwd" | "startedAt" | "completedAt" | "policy">>(
+    (resolve) => {
+      const outputState = { truncated: false };
+      let stdout = "";
+      let stderr = "";
+      let timedOut = false;
+      let settled = false;
+      const child = spawn(executablePath, args, {
+        cwd,
+        env: shellEnvironment(),
+        shell: false,
+        windowsHide: true
+      });
+
+      const timer = setTimeout(() => {
+        timedOut = true;
+        child.kill("SIGTERM");
+      }, timeoutMs);
+
+      child.stdout.on("data", (chunk: Buffer) => {
+        stdout = appendLimitedOutput(stdout, chunk, outputState);
+      });
+      child.stderr.on("data", (chunk: Buffer) => {
+        stderr = appendLimitedOutput(stderr, chunk, outputState);
+      });
+      child.on("error", (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve({
+          exitCode: null,
+          timedOut,
+          truncated: outputState.truncated,
+          stdout: maskSensitiveText(stdout),
+          stderr: maskSensitiveText(stderr || error.message)
+        });
+      });
+      child.on("close", (exitCode, signal) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve({
+          exitCode,
+          ...(signal ? { signal } : {}),
+          timedOut,
+          truncated: outputState.truncated,
+          stdout: maskSensitiveText(stdout),
+          stderr: maskSensitiveText(stderr)
+        });
+      });
+    }
+  );
+}
 
 async function realDirectory(input: string) {
   const absolute = path.resolve(input);
@@ -453,6 +637,72 @@ export class WorkspaceService {
       };
     } catch (error) {
       this.audit(workspace, "apply_patch", "denied", safeInputTarget(relativePath), error instanceof Error ? error.message : "Unknown error.");
+      throw error;
+    }
+  }
+
+  async runShell(
+    workspaceId: string,
+    commandInput: string,
+    relativeCwd = ".",
+    timeoutInput = DEFAULT_SHELL_TIMEOUT_MS
+  ): Promise<WorkspaceShellRunResult> {
+    const workspace = this.requireWorkspace(workspaceId);
+    const command = commandInput.trim();
+    const target = command ? maskSensitiveText(command) : "[empty-command]";
+    try {
+      if (process.platform !== "linux") {
+        throw new WorkspaceError("shell_runner_linux_required", "Shell runner is only enabled on Linux backends.", 501);
+      }
+      if (!command) {
+        throw new WorkspaceError("shell_command_required", "Shell command is required.");
+      }
+      if (command.length > MAX_SHELL_COMMAND_LENGTH) {
+        throw new WorkspaceError("shell_command_too_long", `Shell command cannot exceed ${MAX_SHELL_COMMAND_LENGTH} characters.`, 413);
+      }
+
+      const policy = classifyShellCommand(command);
+      if (policy.action !== "allow" || policy.risk !== "low") {
+        throw new WorkspaceError("shell_policy_blocked", policy.reason, 403);
+      }
+
+      const tokens = parseCommand(command);
+      if (!validateReadOnlyCommand(tokens)) {
+        throw new WorkspaceError("shell_command_not_allowed", "Only allowlisted read-only shell commands can run.", 403);
+      }
+
+      const executablePath = await resolveTrustedExecutable(tokens[0] ?? "");
+      const cwd = await this.resolveInsideWorkspace(workspace, relativeCwd, "directory");
+      const timeoutMs = clampInteger(timeoutInput, 500, MAX_SHELL_TIMEOUT_MS);
+      const startedAt = new Date().toISOString();
+      const result = await executeCommand(executablePath, tokens.slice(1), cwd, timeoutMs);
+      const completedAt = new Date().toISOString();
+      const portableCwd = toPortableRelativePath(workspace.root, cwd);
+      this.audit(
+        workspace,
+        "run_shell",
+        result.exitCode === 0 && !result.timedOut ? "allowed" : "error",
+        `${portableCwd} $ ${target}`,
+        `Ran allowlisted read-only command; exit=${result.exitCode ?? "null"}${result.timedOut ? ", timed out" : ""}.`
+      );
+
+      return {
+        workspaceId: workspace.id,
+        command: target,
+        cwd: portableCwd,
+        startedAt,
+        completedAt,
+        policy,
+        ...result
+      };
+    } catch (error) {
+      this.audit(
+        workspace,
+        "run_shell",
+        "denied",
+        target,
+        error instanceof Error ? maskSensitiveText(error.message) : "Unknown error."
+      );
       throw error;
     }
   }

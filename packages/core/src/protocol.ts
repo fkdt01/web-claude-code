@@ -192,7 +192,14 @@ export type WorkspaceAuditEvent = {
   id: string;
   at: string;
   workspaceId: string;
-  action: "register_workspace" | "file_tree" | "read_file" | "search_workspace" | "preview_patch" | "apply_patch";
+  action:
+    | "register_workspace"
+    | "file_tree"
+    | "read_file"
+    | "search_workspace"
+    | "preview_patch"
+    | "apply_patch"
+    | "run_shell";
   status: "allowed" | "denied" | "error";
   target?: string;
   detail: string;
@@ -244,6 +251,25 @@ export type WorkspacePatchApplyResult = {
   previousSize: number;
   nextSize: number;
   changed: boolean;
+};
+
+export type WorkspaceShellRunResult = {
+  workspaceId: string;
+  command: string;
+  cwd: string;
+  startedAt: string;
+  completedAt: string;
+  exitCode: number | null;
+  signal?: string;
+  timedOut: boolean;
+  truncated: boolean;
+  stdout: string;
+  stderr: string;
+  policy: {
+    action: "allow" | "confirm" | "deny";
+    risk: "low" | "medium" | "high";
+    reason: string;
+  };
 };
 
 export const modelKey = (model: Pick<ModelDescriptor, "provider" | "id">) => `${model.provider}:${model.id}`;
