@@ -11,6 +11,7 @@ import type {
   WorkspacePatchApplyResult,
   WorkspacePatchPreview,
   WorkspaceRunContext,
+  WorkspaceShellPreflight,
   WorkspaceShellRunResult,
   WorkspaceSearchMatch,
   WorkspaceSearchResult,
@@ -46,6 +47,18 @@ const TRUSTED_EXECUTABLES: Record<string, string[]> = {
   ls: ["/usr/bin/ls", "/bin/ls"],
   pwd: ["/usr/bin/pwd", "/bin/pwd"]
 };
+const SHELL_COMMAND_HINTS = [
+  {
+    name: "pwd",
+    usage: "pwd",
+    description: "显示当前工作目录。"
+  },
+  {
+    name: "ls",
+    usage: "ls [-la|-l|-a|-h]",
+    description: "列出当前目录，允许最多 5 个只读选项。"
+  }
+];
 
 type WorkspaceRecord = WorkspaceDescriptor & {
   audit: WorkspaceAuditEvent[];
@@ -194,6 +207,14 @@ function shellEnvironment() {
     GIT_PAGER: ""
   };
   return env;
+}
+
+function shellLimits() {
+  return {
+    commandLengthMax: MAX_SHELL_COMMAND_LENGTH,
+    timeoutMsMax: MAX_SHELL_TIMEOUT_MS,
+    outputBytesMax: MAX_SHELL_OUTPUT_BYTES
+  };
 }
 
 function appendLimitedOutput(current: string, chunk: Buffer, state: { truncated: boolean }) {
@@ -676,6 +697,87 @@ export class WorkspaceService {
       this.audit(workspace, "apply_patch", "denied", safeInputTarget(relativePath), error instanceof Error ? error.message : "Unknown error.");
       throw error;
     }
+  }
+
+  async previewShell(workspaceId: string, commandInput: string, relativeCwd = "."): Promise<WorkspaceShellPreflight> {
+    const workspace = this.requireWorkspace(workspaceId);
+    const command = commandInput.trim();
+    const target = command ? maskSensitiveText(command) : "[empty-command]";
+    const policy = classifyShellCommand(command);
+    let cwd = safeInputTarget(relativeCwd);
+
+    const makePreview = (
+      allowed: boolean,
+      reason: string,
+      code?: string,
+      enabled = process.platform === "linux"
+    ): WorkspaceShellPreflight => ({
+      workspaceId: workspace.id,
+      command: target,
+      cwd,
+      enabled,
+      allowed,
+      reason: maskSensitiveText(reason),
+      ...(code ? { code } : {}),
+      policy,
+      commands: SHELL_COMMAND_HINTS,
+      limits: shellLimits()
+    });
+
+    try {
+      const realCwd = await this.resolveInsideWorkspace(workspace, relativeCwd, "directory");
+      cwd = toPortableRelativePath(workspace.root, realCwd);
+    } catch (error) {
+      return makePreview(
+        false,
+        error instanceof Error ? error.message : "Workspace cwd is invalid.",
+        error instanceof WorkspaceError ? error.code : "path_invalid"
+      );
+    }
+
+    if (!command) {
+      return makePreview(false, "Shell command is required.", "shell_command_required");
+    }
+    if (command.length > MAX_SHELL_COMMAND_LENGTH) {
+      return makePreview(
+        false,
+        `Shell command cannot exceed ${MAX_SHELL_COMMAND_LENGTH} characters.`,
+        "shell_command_too_long"
+      );
+    }
+    if (policy.action !== "allow" || policy.risk !== "low") {
+      return makePreview(false, policy.reason, "shell_policy_blocked");
+    }
+
+    let tokens: string[];
+    try {
+      tokens = parseCommand(command);
+    } catch (error) {
+      return makePreview(
+        false,
+        error instanceof Error ? error.message : "Shell command is invalid.",
+        error instanceof WorkspaceError ? error.code : "shell_command_invalid"
+      );
+    }
+
+    if (!validateReadOnlyCommand(tokens)) {
+      return makePreview(false, "Only allowlisted read-only shell commands can run.", "shell_command_not_allowed");
+    }
+    if (process.platform !== "linux") {
+      return makePreview(false, "Shell runner is only enabled on Linux backends.", "shell_runner_linux_required", false);
+    }
+
+    try {
+      await resolveTrustedExecutable(tokens[0] ?? "");
+    } catch (error) {
+      return makePreview(
+        false,
+        error instanceof Error ? error.message : "Allowlisted executable is unavailable.",
+        error instanceof WorkspaceError ? error.code : "shell_executable_unavailable"
+      );
+    }
+
+    return makePreview(true, "Command matches the read-only allowlist and can run on this Linux backend.");
   }
 
   async runShell(

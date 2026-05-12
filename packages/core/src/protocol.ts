@@ -304,6 +304,35 @@ export type WorkspacePatchApplyResult = {
   changed: boolean;
 };
 
+export type ShellPolicyDecision = {
+  action: "allow" | "confirm" | "deny";
+  risk: "low" | "medium" | "high";
+  reason: string;
+};
+
+export type WorkspaceShellCommandHint = {
+  name: string;
+  usage: string;
+  description: string;
+};
+
+export type WorkspaceShellPreflight = {
+  workspaceId: string;
+  command: string;
+  cwd: string;
+  enabled: boolean;
+  allowed: boolean;
+  reason: string;
+  code?: string;
+  policy: ShellPolicyDecision;
+  commands: WorkspaceShellCommandHint[];
+  limits: {
+    commandLengthMax: number;
+    timeoutMsMax: number;
+    outputBytesMax: number;
+  };
+};
+
 export type WorkspaceShellRunResult = {
   workspaceId: string;
   command: string;
@@ -316,11 +345,7 @@ export type WorkspaceShellRunResult = {
   truncated: boolean;
   stdout: string;
   stderr: string;
-  policy: {
-    action: "allow" | "confirm" | "deny";
-    risk: "low" | "medium" | "high";
-    reason: string;
-  };
+  policy: ShellPolicyDecision;
 };
 
 export const modelKey = (model: Pick<ModelDescriptor, "provider" | "id">) => `${model.provider}:${model.id}`;

@@ -36,6 +36,7 @@ import type {
   WorkspaceFileRead,
   WorkspacePatchPreview,
   WorkspaceSearchMatch,
+  WorkspaceShellPreflight,
   WorkspaceShellRunResult,
   WorkspaceTreeEntry
 } from "@webcode/core";
@@ -50,6 +51,7 @@ import {
   loadWorkspaces,
   previewWorkspacePatch,
   previewRoute,
+  previewWorkspaceShell,
   readWorkspaceFile,
   registerWorkspace,
   runWorkspaceShell,
@@ -509,6 +511,10 @@ export function App() {
   const [patchApplyMessage, setPatchApplyMessage] = useState<string | null>(null);
   const [shellCommand, setShellCommand] = useState("pwd");
   const [shellCwd, setShellCwd] = useState(".");
+  const [shellPreview, setShellPreview] = useState<WorkspaceShellPreflight | null>(null);
+  const [shellPreviewSource, setShellPreviewSource] = useState<{ command: string; cwd: string } | null>(null);
+  const [shellPreviewError, setShellPreviewError] = useState<string | null>(null);
+  const [shellPreviewLoading, setShellPreviewLoading] = useState(false);
   const [shellResult, setShellResult] = useState<WorkspaceShellRunResult | null>(null);
   const [shellError, setShellError] = useState<string | null>(null);
   const [shellLoading, setShellLoading] = useState(false);
@@ -519,6 +525,7 @@ export function App() {
   const patchDraftRef = useRef("");
   const patchPreviewRequestRef = useRef(0);
   const patchApplyRequestRef = useRef(0);
+  const shellPreviewRequestRef = useRef(0);
   const shellRequestRef = useRef(0);
   const routePreviewRequestRef = useRef(0);
   const runAbortRef = useRef<AbortController | null>(null);
@@ -594,6 +601,44 @@ export function App() {
   }, [patchDraft]);
 
   useEffect(() => () => runAbortRef.current?.abort(), []);
+
+  useEffect(() => {
+    const command = shellCommand.trim();
+    if (!workspace || !command) {
+      shellPreviewRequestRef.current += 1;
+      setShellPreview(null);
+      setShellPreviewSource(null);
+      setShellPreviewError(null);
+      setShellPreviewLoading(false);
+      return;
+    }
+
+    const workspaceId = workspace.id;
+    const cwd = shellCwd.trim() || ".";
+    const requestId = shellPreviewRequestRef.current + 1;
+    shellPreviewRequestRef.current = requestId;
+    const timer = window.setTimeout(() => {
+      setShellPreviewLoading(true);
+      setShellPreviewError(null);
+      previewWorkspaceShell(workspaceId, command, cwd)
+        .then((preview) => {
+          if (shellPreviewRequestRef.current !== requestId || workspaceIdRef.current !== workspaceId) return;
+          setShellPreview(preview);
+          setShellPreviewSource({ command, cwd });
+        })
+        .catch((error) => {
+          if (shellPreviewRequestRef.current !== requestId || workspaceIdRef.current !== workspaceId) return;
+          setShellPreview(null);
+          setShellPreviewSource(null);
+          setShellPreviewError(maskWorkspaceError(error, "shell 策略预检失败"));
+        })
+        .finally(() => {
+          if (shellPreviewRequestRef.current === requestId) setShellPreviewLoading(false);
+        });
+    }, 250);
+
+    return () => window.clearTimeout(timer);
+  }, [workspace, shellCommand, shellCwd]);
 
   useEffect(() => {
     if (!bootstrap) return;
@@ -672,6 +717,27 @@ export function App() {
       !patchApplyLoading &&
       !workspaceFileHasSensitiveContent
   );
+  const shellPreviewMatchesInput = Boolean(
+    shellPreview &&
+      shellPreviewSource?.command === shellCommand.trim() &&
+      shellPreviewSource.cwd === (shellCwd.trim() || ".")
+  );
+  const visibleShellPreview = shellPreviewMatchesInput ? shellPreview : null;
+  const shellCanRun = Boolean(
+    workspace &&
+      shellCommand.trim() &&
+      visibleShellPreview?.allowed &&
+      !workspaceLoading &&
+      !shellPreviewLoading &&
+      !shellLoading
+  );
+  const shellPreviewTitle = visibleShellPreview
+    ? visibleShellPreview.code === "shell_runner_linux_required"
+      ? "Linux runner 未启用"
+      : visibleShellPreview.allowed
+        ? "预检通过"
+        : "预检拦截"
+    : "";
   const visibleStreamEvents = useMemo(() => {
     if (streamEvents.length <= 10) return streamEvents;
     const first = streamEvents[0];
@@ -778,6 +844,7 @@ export function App() {
     workspaceFilePathRef.current = null;
     patchPreviewRequestRef.current += 1;
     patchApplyRequestRef.current += 1;
+    shellPreviewRequestRef.current += 1;
     setWorkspaceLoading(true);
     setWorkspaceError(null);
     setWorkspaceFile(null);
@@ -788,6 +855,10 @@ export function App() {
     setPatchPreviewLoading(false);
     setPatchApplyLoading(false);
     setPatchApplyMessage(null);
+    setShellPreview(null);
+    setShellPreviewSource(null);
+    setShellPreviewError(null);
+    setShellPreviewLoading(false);
     setShellResult(null);
     setShellError(null);
     try {
@@ -972,7 +1043,7 @@ export function App() {
 
   async function runShellCommand() {
     const command = shellCommand.trim();
-    if (!workspace || workspaceLoading || shellLoading || !command) return;
+    if (!workspace || !shellCanRun || !command) return;
 
     const workspaceId = workspace.id;
     const requestId = shellRequestRef.current + 1;
@@ -1406,6 +1477,10 @@ export function App() {
                     value={shellCommand}
                     onChange={(event) => {
                       setShellCommand(event.target.value);
+                      setShellPreview(null);
+                      setShellPreviewSource(null);
+                      setShellPreviewError(null);
+                      setShellResult(null);
                       setShellError(null);
                     }}
                     onKeyDown={(event) => {
@@ -1417,19 +1492,45 @@ export function App() {
                   />
                   <input
                     value={shellCwd}
-                    onChange={(event) => setShellCwd(event.target.value)}
+                    onChange={(event) => {
+                      setShellCwd(event.target.value);
+                      setShellPreview(null);
+                      setShellPreviewSource(null);
+                      setShellPreviewError(null);
+                      setShellResult(null);
+                    }}
                     placeholder="."
                     title="工作目录"
                   />
                   <button
                     type="button"
                     onClick={() => void runShellCommand()}
-                    disabled={!workspace || workspaceLoading || shellLoading || !shellCommand.trim()}
-                    title="运行只读 shell 命令"
+                    disabled={!shellCanRun}
+                    title={visibleShellPreview?.allowed ? "运行只读 shell 命令" : visibleShellPreview?.reason ?? "等待策略预检"}
                   >
                     <TerminalSquare size={15} />
                   </button>
                 </div>
+                {shellPreviewLoading ? <p className="empty">策略预检中。</p> : null}
+                {visibleShellPreview ? (
+                  <div className={`shell-policy ${visibleShellPreview.allowed ? "allowed" : "blocked"}`}>
+                    <strong>{shellPreviewTitle}</strong>
+                    <span>
+                      {visibleShellPreview.policy.action} · {visibleShellPreview.policy.risk} ·{" "}
+                      {maskSensitiveText(visibleShellPreview.reason)}
+                    </span>
+                    <small>
+                      允许模板：{visibleShellPreview.commands.map((command) => command.usage).join("、")} · 最长{" "}
+                      {Math.round(visibleShellPreview.limits.timeoutMsMax / 1000)}s
+                    </small>
+                  </div>
+                ) : null}
+                {shellPreviewError ? (
+                  <div className="workspace-error">
+                    <TriangleAlert size={15} />
+                    <span>{shellPreviewError}</span>
+                  </div>
+                ) : null}
                 {shellError ? (
                   <div className="workspace-error">
                     <TriangleAlert size={15} />

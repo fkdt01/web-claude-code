@@ -904,6 +904,25 @@ button {
   opacity: 0.55;
 }
 
+.shell-policy {
+  display: grid;
+  gap: 3px;
+  padding: 10px;
+  border-left: 4px solid #327a52;
+  border-radius: 8px;
+  background: #f8f7f3;
+}
+
+.shell-policy.blocked {
+  border-left-color: #c25c45;
+}
+
+.shell-policy span,
+.shell-policy small {
+  color: #6b716d;
+  font-size: 12px;
+}
+
 .shell-output {
   display: grid;
   gap: 6px;

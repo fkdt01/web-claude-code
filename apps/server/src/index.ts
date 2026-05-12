@@ -73,6 +73,11 @@ type WorkspaceShellRunBody = {
   timeoutMs?: number;
 };
 
+type WorkspaceShellPreviewBody = {
+  command?: string;
+  cwd?: string;
+};
+
 type RoutePreviewBody = {
   prompt?: unknown;
   mode?: unknown;
@@ -522,6 +527,21 @@ app.post<{ Params: WorkspaceParams; Body: WorkspaceShellRunBody }>(
         request.body.command,
         request.body.cwd ?? ".",
         request.body.timeoutMs
+      );
+    } catch (error) {
+      return sendWorkspaceError(reply, error);
+    }
+  }
+);
+
+app.post<{ Params: WorkspaceParams; Body: WorkspaceShellPreviewBody }>(
+  "/api/workspaces/:workspaceId/shell/preview",
+  async (request, reply) => {
+    try {
+      return await workspaceService.previewShell(
+        request.params.workspaceId,
+        typeof request.body?.command === "string" ? request.body.command : "",
+        typeof request.body?.cwd === "string" ? request.body.cwd : "."
       );
     } catch (error) {
       return sendWorkspaceError(reply, error);

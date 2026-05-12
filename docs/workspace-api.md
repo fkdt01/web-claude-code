@@ -79,6 +79,19 @@
 
 当前只允许手动 API 调用，不会被模型自动触发。高风险命令、依赖安装、网络命令、Git 命令、`ls` 路径参数和任何带管道/重定向/命令拼接的输入都会被拒绝。
 
+### `POST /api/workspaces/:workspaceId/shell/preview`
+
+在不执行命令的前提下预检 shell 策略、Linux runner 状态、只读 allowlist 和 cwd 边界。前端用它决定运行按钮是否可用；该接口不会写文件，也不会记录成一次 shell 执行审计。
+
+```json
+{
+  "command": "pwd",
+  "cwd": "."
+}
+```
+
+响应会包含 `enabled`、`allowed`、`reason`、`policy`、允许模板和输出/超时限制。非 Linux 后端会返回 `enabled: false`，真实执行接口仍会拒绝运行。
+
 ### `GET /api/workspaces/:workspaceId/audit`
 
 返回该 workspace 的基础审计事件。
