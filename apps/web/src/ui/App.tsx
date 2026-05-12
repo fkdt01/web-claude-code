@@ -26,6 +26,7 @@ import type {
   ModelCost,
   ModelRunResult,
   OrchestrationMode,
+  RoutePreview,
   RunRequest,
   RunResult,
   RunStreamEvent,
@@ -45,6 +46,7 @@ import {
   loadWorkspaceTree,
   loadWorkspaces,
   previewWorkspacePatch,
+  previewRoute,
   readWorkspaceFile,
   registerWorkspace,
   runWorkspaceShell,
@@ -305,6 +307,9 @@ export function App() {
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
   const [mode, setMode] = useState<OrchestrationMode>("committee");
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
+  const [routePreview, setRoutePreview] = useState<RoutePreview | null>(null);
+  const [routePreviewError, setRoutePreviewError] = useState<string | null>(null);
+  const [routePreviewLoading, setRoutePreviewLoading] = useState(false);
   const [runState, setRunState] = useState<UiRunState>({ status: "idle" });
   const [showInspector, setShowInspector] = useState(true);
   const [workspace, setWorkspace] = useState<WorkspaceDescriptor | null>(null);
@@ -333,6 +338,7 @@ export function App() {
   const patchPreviewRequestRef = useRef(0);
   const patchApplyRequestRef = useRef(0);
   const shellRequestRef = useRef(0);
+  const routePreviewRequestRef = useRef(0);
   const runAbortRef = useRef<AbortController | null>(null);
   const runRequestRef = useRef(0);
 
@@ -395,6 +401,33 @@ export function App() {
   }, [patchDraft]);
 
   useEffect(() => () => runAbortRef.current?.abort(), []);
+
+  useEffect(() => {
+    if (!bootstrap) return;
+
+    const requestId = routePreviewRequestRef.current + 1;
+    routePreviewRequestRef.current = requestId;
+    setRoutePreviewLoading(true);
+    setRoutePreviewError(null);
+    previewRoute({
+      prompt: "",
+      mode,
+      selectedModels,
+      maxOutputTokens: 1200
+    })
+      .then((preview) => {
+        if (routePreviewRequestRef.current !== requestId) return;
+        setRoutePreview(preview);
+      })
+      .catch((error) => {
+        if (routePreviewRequestRef.current !== requestId) return;
+        setRoutePreview(null);
+        setRoutePreviewError(maskSensitiveText(error instanceof Error ? error.message : "路由预览失败"));
+      })
+      .finally(() => {
+        if (routePreviewRequestRef.current === requestId) setRoutePreviewLoading(false);
+      });
+  }, [bootstrap, mode, selectedModels]);
 
   const models = useMemo(() => flattenModels(bootstrap?.providers ?? []), [bootstrap]);
   const result = runState.result;
@@ -763,6 +796,46 @@ export function App() {
               <span>{bootstrap?.providers.length ?? 0} 个接口</span>
               <span>{readyCount} 个可用</span>
               <span>{selectedModels.length} 个已选</span>
+            </div>
+            <div className="route-preview">
+              <div className="route-preview-head">
+                <strong>路由预览</strong>
+                <span>
+                  {routePreviewLoading
+                    ? "计算中"
+                    : routePreview
+                      ? `${routePreview.selectedModels.length} 个模型 · ${formatUsd(routePreview.estimatedMaxOutputCostUsd)}`
+                      : "未就绪"}
+                </span>
+              </div>
+              {routePreviewError ? (
+                <div className="workspace-error">
+                  <TriangleAlert size={15} />
+                  <span>{routePreviewError}</span>
+                </div>
+              ) : null}
+              {routePreview ? (
+                <>
+                  <div className="route-flags">
+                    <span>{routePreview.mode}</span>
+                    <span>{routePreview.fallbackUsed ? "fallback mock" : "按选择路由"}</span>
+                    <span>{routePreview.maxOutputTokens} max tokens</span>
+                  </div>
+                  <div className="route-models">
+                    {routePreview.models.map((model) => (
+                      <span key={model.key}>
+                        {model.provider}/{model.model} · {model.role}
+                      </span>
+                    ))}
+                  </div>
+                  {routePreview.unavailableModels.length || routePreview.unknownModels.length ? (
+                    <p className="empty">
+                      跳过：
+                      {[...routePreview.unavailableModels, ...routePreview.unknownModels].join("、")}
+                    </p>
+                  ) : null}
+                </>
+              ) : null}
             </div>
             <div className="model-list">
               {models.map((entry) => (

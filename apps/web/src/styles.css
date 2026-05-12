@@ -416,6 +416,53 @@ button {
   font-size: 12px;
 }
 
+.route-preview {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 10px;
+  border: 1px solid #e5e2db;
+  border-radius: 8px;
+  background: #fbfaf7;
+}
+
+.route-preview-head,
+.route-flags {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.route-preview-head strong {
+  font-size: 13px;
+}
+
+.route-preview-head span,
+.route-flags span,
+.route-models span {
+  color: #6b716d;
+  font-size: 12px;
+}
+
+.route-flags,
+.route-models {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+}
+
+.route-flags span,
+.route-models span {
+  padding: 4px 7px;
+  border-radius: 999px;
+  background: #f1efe9;
+}
+
+.route-models {
+  display: flex;
+  gap: 6px;
+}
+
 .model-list {
   display: grid;
   gap: 8px;

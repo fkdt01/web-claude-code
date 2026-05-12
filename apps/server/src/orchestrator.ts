@@ -5,6 +5,7 @@ import type {
   ModelRunResult,
   OrchestrationMode,
   ProviderAdapter,
+  RoutePreview,
   RunRequest,
   RunResult,
   RunStreamEvent,
@@ -45,13 +46,31 @@ function listModels(providers: ProviderAdapter[]): ModelEntry[] {
   );
 }
 
-function selectModels(request: RunRequest, providers: ProviderAdapter[]): ModelEntry[] {
+function routeEntries(request: RunRequest, providers: ProviderAdapter[]) {
   const all = listModels(providers);
-  const selected = request.selectedModels.length
+  const requested = request.selectedModels.length
     ? all.filter((entry) => request.selectedModels.includes(entry.key))
     : all.filter((entry) => entry.model.provider === "mock");
+  const availableRequested = requested.filter((entry) => entry.model.available);
+  const fallbackUsed = request.selectedModels.length > 0 && availableRequested.length === 0;
+  const fallbackSelected = availableRequested.length
+    ? availableRequested
+    : all.filter((entry) => entry.model.provider === "mock" && entry.model.available);
+  const entries = request.mode === "single" ? fallbackSelected.slice(0, 1) : fallbackSelected;
+  return {
+    entries,
+    fallbackUsed
+  };
+}
 
-  return selected.length ? selected : all.filter((entry) => entry.model.provider === "mock");
+function estimateMaxOutputCostUsd(entry: ModelEntry, maxOutputTokens: number) {
+  const outputPerMillion = entry.model.cost?.currency && entry.model.cost.currency !== "USD"
+    ? undefined
+    : entry.model.cost?.outputPerMillion;
+  if (outputPerMillion === undefined || !Number.isFinite(outputPerMillion) || outputPerMillion < 0) return undefined;
+
+  const estimated = (maxOutputTokens * outputPerMillion) / 1_000_000;
+  return Number.isFinite(estimated) ? Number(estimated.toFixed(8)) : undefined;
 }
 
 function createChatRequest(
@@ -311,9 +330,7 @@ async function collectModelStream(
 export async function orchestrateRun(request: RunRequest, providers: ProviderAdapter[]): Promise<RunResult> {
   const runId = crypto.randomUUID();
   const startedAt = new Date().toISOString();
-  const selected = selectModels(request, providers).filter((entry) => entry.model.available);
-  const fallbackSelected = selected.length ? selected : selectModels({ ...request, selectedModels: [] }, providers);
-  const entries = request.mode === "single" ? fallbackSelected.slice(0, 1) : fallbackSelected;
+  const { entries } = routeEntries(request, providers);
 
   const events: AuditEvent[] = [
     audit("任务已创建", `编排模式：${request.mode}，模型数量：${entries.length}。`),
@@ -349,9 +366,7 @@ export async function* streamRun(
 ): AsyncIterable<RunStreamEvent> {
   const runId = crypto.randomUUID();
   const startedAt = new Date().toISOString();
-  const selected = selectModels(request, providers).filter((entry) => entry.model.available);
-  const fallbackSelected = selected.length ? selected : selectModels({ ...request, selectedModels: [] }, providers);
-  const entries = request.mode === "single" ? fallbackSelected.slice(0, 1) : fallbackSelected;
+  const { entries } = routeEntries(request, providers);
   const events: AuditEvent[] = [
     audit("任务已创建", `编排模式：${request.mode}，模型数量：${entries.length}。`),
     audit("工具策略已加载", `${defaultToolSpecs.length} 个工具规格已接入策略检查。`)
@@ -421,6 +436,49 @@ export async function* streamRun(
     signal?.removeEventListener("abort", closeQueue);
     queue.close();
   }
+}
+
+export function previewRoute(request: RunRequest, providers: ProviderAdapter[]): RoutePreview {
+  const all = listModels(providers);
+  const allKeys = new Set(all.map((entry) => entry.key));
+  const requestedModels = request.selectedModels;
+  const unknownModels = requestedModels.filter((key) => !allKeys.has(key));
+  const unavailableModels = all
+    .filter((entry) => requestedModels.includes(entry.key) && !entry.model.available)
+    .map((entry) => entry.key);
+  const maxOutputTokens = request.maxOutputTokens ?? 1200;
+  const { entries, fallbackUsed } = routeEntries(request, providers);
+  const models = entries.map((entry) => {
+    const estimatedMaxOutputCostUsd = estimateMaxOutputCostUsd(entry, maxOutputTokens);
+    return {
+      key: entry.key,
+      provider: entry.model.provider,
+      model: entry.model.id,
+      label: entry.model.label,
+      role: entry.model.role,
+      available: entry.model.available,
+      ...(estimatedMaxOutputCostUsd !== undefined ? { estimatedMaxOutputCostUsd } : {})
+    };
+  });
+  const costValues = models
+    .map((model) => model.estimatedMaxOutputCostUsd)
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  const estimatedMaxOutputCostUsd =
+    models.length > 0 && costValues.length === models.length
+      ? Number(costValues.reduce((sum, value) => sum + value, 0).toFixed(8))
+      : undefined;
+
+  return {
+    mode: request.mode,
+    maxOutputTokens,
+    requestedModels,
+    selectedModels: entries.map((entry) => entry.key),
+    unknownModels,
+    unavailableModels,
+    fallbackUsed,
+    models,
+    ...(estimatedMaxOutputCostUsd !== undefined ? { estimatedMaxOutputCostUsd } : {})
+  };
 }
 
 export function providerPayload(providers: ProviderAdapter[]) {

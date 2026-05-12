@@ -1,6 +1,7 @@
 import type { RunRequest, RunResult, RunStreamEvent } from "@webcode/core";
 import type {
   BootstrapPayload,
+  RoutePreviewPayload,
   WorkspaceAuditPayload,
   WorkspaceBootstrapPayload,
   WorkspaceFilePayload,
@@ -49,6 +50,16 @@ export async function loadBootstrap() {
 export async function createRun(request: RunRequest) {
   return parseJson<RunResult>(
     await fetch("/api/runs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request)
+    })
+  );
+}
+
+export async function previewRoute(request: Partial<RunRequest>) {
+  return parseJson<RoutePreviewPayload>(
+    await fetch("/api/routing/preview", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(request)

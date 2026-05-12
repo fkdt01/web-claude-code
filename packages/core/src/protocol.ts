@@ -130,6 +130,28 @@ export type RunResult = {
   audit: AuditEvent[];
 };
 
+export type RoutePreviewModel = {
+  key: string;
+  provider: ProviderId;
+  model: string;
+  label: string;
+  role: AgentRole;
+  available: boolean;
+  estimatedMaxOutputCostUsd?: number;
+};
+
+export type RoutePreview = {
+  mode: OrchestrationMode;
+  maxOutputTokens: number;
+  requestedModels: string[];
+  selectedModels: string[];
+  unknownModels: string[];
+  unavailableModels: string[];
+  fallbackUsed: boolean;
+  models: RoutePreviewModel[];
+  estimatedMaxOutputCostUsd?: number;
+};
+
 export type RunStreamEvent =
   | {
       type: "run_started";

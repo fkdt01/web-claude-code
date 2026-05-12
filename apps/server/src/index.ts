@@ -1,15 +1,17 @@
 import type { ServerResponse } from "node:http";
 import cors from "@fastify/cors";
 import Fastify from "fastify";
-import type { RunRequest, RunStreamEvent } from "@webcode/core";
+import type { OrchestrationMode, RunRequest, RunStreamEvent } from "@webcode/core";
 import { classifyShellCommand, defaultToolSpecs } from "@webcode/core";
-import { orchestrateRun, providerPayload, streamRun } from "./orchestrator.js";
+import { orchestrateRun, previewRoute, providerPayload, streamRun } from "./orchestrator.js";
 import { createProviderRegistry } from "./providers.js";
 import { createWorkspaceService, WorkspaceError } from "./workspaces.js";
 
 const port = Number(process.env.PORT ?? 8787);
 const host = process.env.HOST ?? "0.0.0.0";
 const patchPreviewBodyLimit = 1024 * 1024;
+const maxOutputTokensLimit = 200_000;
+const orchestrationModes = ["single", "race", "committee", "specialist"] as const satisfies readonly OrchestrationMode[];
 const providers = createProviderRegistry();
 const workspaceService = await createWorkspaceService();
 
@@ -54,6 +56,14 @@ type WorkspaceShellRunBody = {
   timeoutMs?: number;
 };
 
+type RoutePreviewBody = {
+  prompt?: unknown;
+  mode?: unknown;
+  selectedModels?: unknown;
+  workspaceId?: unknown;
+  maxOutputTokens?: unknown;
+};
+
 function sendWorkspaceError(reply: { code(statusCode: number): { send(payload: unknown): unknown } }, error: unknown) {
   if (error instanceof WorkspaceError) {
     return reply.code(error.statusCode).send({
@@ -75,13 +85,44 @@ function parseBoundedInteger(input: string | undefined, fallback: number, min: n
   return Math.min(max, Math.max(min, Math.floor(value)));
 }
 
+function normalizeMode(value: unknown): OrchestrationMode {
+  return typeof value === "string" && (orchestrationModes as readonly string[]).includes(value)
+    ? (value as OrchestrationMode)
+    : "committee";
+}
+
+function normalizeSelectedModels(value: unknown) {
+  return Array.isArray(value)
+    ? value.filter((model): model is string => typeof model === "string" && model.trim().length > 0)
+    : [];
+}
+
+function normalizeMaxOutputTokens(value: unknown) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  const normalized = Math.floor(value);
+  if (normalized < 1) return undefined;
+  return Math.min(normalized, maxOutputTokensLimit);
+}
+
 function normalizeRunRequest(body: RunRequest): RunRequest {
+  const maxOutputTokens = normalizeMaxOutputTokens(body.maxOutputTokens);
   return {
     prompt: body.prompt,
-    mode: body.mode ?? "committee",
-    selectedModels: body.selectedModels ?? [],
+    mode: normalizeMode(body.mode),
+    selectedModels: normalizeSelectedModels(body.selectedModels),
     ...(body.workspaceId ? { workspaceId: body.workspaceId } : {}),
-    ...(body.maxOutputTokens ? { maxOutputTokens: body.maxOutputTokens } : {})
+    ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {})
+  };
+}
+
+function normalizeRoutePreviewRequest(body: RoutePreviewBody | undefined): RunRequest {
+  const maxOutputTokens = normalizeMaxOutputTokens(body?.maxOutputTokens);
+  return {
+    prompt: typeof body?.prompt === "string" ? body.prompt : "",
+    mode: normalizeMode(body?.mode),
+    selectedModels: normalizeSelectedModels(body?.selectedModels),
+    ...(typeof body?.workspaceId === "string" && body.workspaceId ? { workspaceId: body.workspaceId } : {}),
+    ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {})
   };
 }
 
@@ -101,8 +142,12 @@ app.get("/api/providers", async () => ({
   tools: defaultToolSpecs
 }));
 
+app.post<{ Body: RoutePreviewBody }>("/api/routing/preview", async (request) =>
+  previewRoute(normalizeRoutePreviewRequest(request.body), providers)
+);
+
 app.post<{ Body: RunRequest }>("/api/runs", async (request, reply) => {
-  if (!request.body?.prompt?.trim()) {
+  if (typeof request.body?.prompt !== "string" || !request.body.prompt.trim()) {
     return reply.code(400).send({ error: "prompt is required" });
   }
 
@@ -112,7 +157,7 @@ app.post<{ Body: RunRequest }>("/api/runs", async (request, reply) => {
 });
 
 app.post<{ Body: RunRequest }>("/api/runs/stream", async (request, reply) => {
-  if (!request.body?.prompt?.trim()) {
+  if (typeof request.body?.prompt !== "string" || !request.body.prompt.trim()) {
     return reply.code(400).send({ error: "prompt is required" });
   }
 
