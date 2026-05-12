@@ -285,6 +285,8 @@ export type WorkspaceDiffLine = {
 export type WorkspacePatchPreview = {
   workspaceId: string;
   path: string;
+  previewToken: string;
+  previewExpiresAt: string;
   baseHash: string;
   originalSize: number;
   updatedSize: number;

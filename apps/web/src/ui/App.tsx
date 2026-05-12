@@ -734,6 +734,7 @@ export function App() {
       workspaceFile &&
       patchPreview?.changed &&
       patchPreview.baseHash &&
+      patchPreview.previewToken &&
       patchPreviewMatchesDraft &&
       !patchPreview.truncated &&
       !workspaceLoading &&
@@ -1035,13 +1036,14 @@ export function App() {
     const applyPath = workspaceFile.path;
     const applyDraft = patchDraft;
     const expectedHash = patchPreview.baseHash;
+    const expectedPreviewToken = patchPreview.previewToken;
     const requestId = patchApplyRequestRef.current + 1;
     patchApplyRequestRef.current = requestId;
     setPatchApplyLoading(true);
     setPatchPreviewError(null);
     setPatchApplyMessage(null);
     try {
-      const applied = await applyWorkspacePatch(workspace.id, applyPath, applyDraft, expectedHash);
+      const applied = await applyWorkspacePatch(workspace.id, applyPath, applyDraft, expectedHash, expectedPreviewToken);
       const [filePayload, treePayload, auditPayload] = await Promise.all([
         readWorkspaceFile(workspace.id, applyPath),
         loadWorkspaceTree(workspace.id, ".", 2),

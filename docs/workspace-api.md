@@ -60,10 +60,13 @@
 ### `POST /api/workspaces/:workspaceId/patches/preview`
 
 预览对单个文本文件的修改，返回 base hash 和截断后的 diff，不写入文件。
+响应会同时返回 `previewToken` 和 `previewExpiresAt`。后端只在内存中保留短生命周期 ticket 元数据：
+`path`、`baseHash`、`newContent` 的 hash、是否截断以及过期时间，不保存完整草稿内容。
 
 ### `POST /api/workspaces/:workspaceId/patches/apply`
 
-在 base hash 未变化时应用已经预览过的修改。超大文件、二进制文件和 hash 冲突会被拒绝。
+在 base hash 未变化、且请求携带最近 preview 返回的 `expectedPreviewToken` 时，应用已经预览过的修改。后端会校验 token 绑定的
+`path`、`baseHash` 和 `newContent` hash 与本次 apply 完全一致；缺失、过期、不匹配、diff 已截断、超大文件、二进制文件和 hash 冲突都会被拒绝。成功 apply 或 no-op apply 后 token 会被消费。
 
 ### `POST /api/workspaces/:workspaceId/shell`
 

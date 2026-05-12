@@ -24,6 +24,8 @@ const SENSITIVE_FILE_NAMES = new Set([".env", ".env.local", ".env.production", "
 const MAX_READ_BYTES = 256 * 1024;
 const MAX_PATCH_PREVIEW_BYTES = MAX_READ_BYTES;
 const MAX_PATCH_APPLY_BYTES = MAX_READ_BYTES;
+const MAX_PATCH_PREVIEW_TICKETS = 50;
+const PATCH_PREVIEW_TTL_MS = 10 * 60 * 1000;
 const MAX_SEARCH_FILE_BYTES = 1024 * 1024;
 const MAX_TREE_DEPTH = 6;
 const MAX_TREE_ENTRIES = 600;
@@ -62,6 +64,16 @@ const SHELL_COMMAND_HINTS = [
 
 type WorkspaceRecord = WorkspaceDescriptor & {
   audit: WorkspaceAuditEvent[];
+  patchPreviews: Map<string, WorkspacePatchPreviewTicket>;
+};
+
+type WorkspacePatchPreviewTicket = {
+  path: string;
+  baseHash: string;
+  newContentHash: string;
+  createdAtMs: number;
+  expiresAtMs: number;
+  truncated: boolean;
 };
 
 export class WorkspaceError extends Error {
@@ -429,7 +441,7 @@ export class WorkspaceService {
   }
 
   listWorkspaces(): WorkspaceDescriptor[] {
-    return [...this.workspaces.values()].map(({ audit: _audit, ...workspace }) => workspace);
+    return [...this.workspaces.values()].map((workspace) => this.describe(workspace));
   }
 
   async register(rootInput: string, nameInput?: string): Promise<WorkspaceDescriptor> {
@@ -443,12 +455,12 @@ export class WorkspaceService {
       name: nameInput?.trim() || path.basename(root) || "workspace",
       root,
       createdAt: new Date().toISOString(),
-      audit: []
+      audit: [],
+      patchPreviews: new Map()
     };
     this.workspaces.set(workspace.id, workspace);
     this.audit(workspace, "register_workspace", "allowed", ".", `Registered workspace ${maskSensitiveText(workspace.name)}.`);
-    const { audit: _audit, ...descriptor } = workspace;
-    return descriptor;
+    return this.describe(workspace);
   }
 
   async tree(workspaceId: string, relativePath = ".", depth = 3) {
@@ -609,7 +621,16 @@ export class WorkspaceService {
 
       const originalContent = await fs.readFile(filePath, "utf8");
       const portablePath = toPortableRelativePath(workspace.root, filePath);
+      const baseHash = contentHash(originalContent);
+      const newContentHash = contentHash(newContent);
       const { diff, truncated } = createDiffLines(originalContent, newContent);
+      const previewToken = this.rememberPatchPreview(workspace, {
+        path: portablePath,
+        baseHash,
+        newContentHash,
+        truncated
+      });
+      const previewExpiresAt = new Date((workspace.patchPreviews.get(previewToken)?.expiresAtMs ?? Date.now())).toISOString();
       this.audit(
         workspace,
         "preview_patch",
@@ -620,7 +641,9 @@ export class WorkspaceService {
       return {
         workspaceId: workspace.id,
         path: portablePath,
-        baseHash: contentHash(originalContent),
+        previewToken,
+        previewExpiresAt,
+        baseHash,
         originalSize: stat.size,
         updatedSize,
         changed: originalContent !== newContent,
@@ -637,13 +660,18 @@ export class WorkspaceService {
     workspaceId: string,
     relativePath: string,
     newContent: string,
-    expectedHash: string
+    expectedHash: string,
+    expectedPreviewToken: string
   ): Promise<WorkspacePatchApplyResult> {
     const workspace = this.requireWorkspace(workspaceId);
     try {
       const cleanExpectedHash = expectedHash.trim().toLowerCase();
       if (!/^[a-f0-9]{64}$/.test(cleanExpectedHash)) {
         throw new WorkspaceError("patch_hash_invalid", "Patch apply requires a valid base hash.");
+      }
+      const cleanPreviewToken = expectedPreviewToken.trim();
+      if (!/^[a-f0-9-]{36}$/i.test(cleanPreviewToken)) {
+        throw new WorkspaceError("patch_preview_token_invalid", "Patch apply requires a valid preview token.");
       }
       if (newContent.includes("\0")) {
         throw new WorkspaceError("patch_content_binary", "Patch apply content must be text.", 415);
@@ -671,6 +699,9 @@ export class WorkspaceService {
       }
 
       const nextHash = contentHash(newContent);
+      const preview = this.requirePatchPreview(workspace, cleanPreviewToken);
+      this.verifyPatchPreview(preview, portablePath, cleanExpectedHash, nextHash);
+      workspace.patchPreviews.delete(cleanPreviewToken);
       const changed = currentContent !== newContent;
       if (changed) {
         await fs.writeFile(filePath, newContent, "utf8");
@@ -859,8 +890,59 @@ export class WorkspaceService {
   }
 
   private describe(workspace: WorkspaceRecord): WorkspaceDescriptor {
-    const { audit: _audit, ...descriptor } = workspace;
+    const { audit: _audit, patchPreviews: _patchPreviews, ...descriptor } = workspace;
     return descriptor;
+  }
+
+  private prunePatchPreviews(workspace: WorkspaceRecord, nowMs = Date.now()) {
+    for (const [token, preview] of workspace.patchPreviews) {
+      if (preview.expiresAtMs <= nowMs) workspace.patchPreviews.delete(token);
+    }
+
+    while (workspace.patchPreviews.size >= MAX_PATCH_PREVIEW_TICKETS) {
+      const oldest = [...workspace.patchPreviews.entries()].sort(
+        ([, left], [, right]) => left.createdAtMs - right.createdAtMs
+      )[0]?.[0];
+      if (!oldest) break;
+      workspace.patchPreviews.delete(oldest);
+    }
+  }
+
+  private rememberPatchPreview(
+    workspace: WorkspaceRecord,
+    preview: Pick<WorkspacePatchPreviewTicket, "path" | "baseHash" | "newContentHash" | "truncated">
+  ) {
+    const nowMs = Date.now();
+    this.prunePatchPreviews(workspace, nowMs);
+    const previewToken = randomUUID();
+    workspace.patchPreviews.set(previewToken, {
+      ...preview,
+      createdAtMs: nowMs,
+      expiresAtMs: nowMs + PATCH_PREVIEW_TTL_MS
+    });
+    return previewToken;
+  }
+
+  private requirePatchPreview(workspace: WorkspaceRecord, previewToken: string) {
+    const nowMs = Date.now();
+    const preview = workspace.patchPreviews.get(previewToken);
+    if (!preview) {
+      throw new WorkspaceError("patch_preview_required", "Patch apply requires a recent preview token.", 409);
+    }
+    if (preview.expiresAtMs <= nowMs) {
+      workspace.patchPreviews.delete(previewToken);
+      throw new WorkspaceError("patch_preview_expired", "Patch preview expired; preview the diff again before applying.", 409);
+    }
+    return preview;
+  }
+
+  private verifyPatchPreview(preview: WorkspacePatchPreviewTicket, path: string, baseHash: string, newContentHash: string) {
+    if (preview.truncated) {
+      throw new WorkspaceError("patch_preview_truncated", "Truncated patch previews cannot be applied.", 409);
+    }
+    if (preview.path !== path || preview.baseHash !== baseHash || preview.newContentHash !== newContentHash) {
+      throw new WorkspaceError("patch_preview_mismatch", "Patch apply content does not match the reviewed preview.", 409);
+    }
   }
 
   private audit(

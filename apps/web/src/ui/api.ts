@@ -188,12 +188,18 @@ export async function previewWorkspacePatch(workspaceId: string, path: string, n
   );
 }
 
-export async function applyWorkspacePatch(workspaceId: string, path: string, newContent: string, expectedHash: string) {
+export async function applyWorkspacePatch(
+  workspaceId: string,
+  path: string,
+  newContent: string,
+  expectedHash: string,
+  expectedPreviewToken: string
+) {
   return parseJson<WorkspacePatchApplyPayload>(
     await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/patches/apply`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path, newContent, expectedHash })
+      body: JSON.stringify({ path, newContent, expectedHash, expectedPreviewToken })
     })
   );
 }

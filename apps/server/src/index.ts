@@ -65,6 +65,7 @@ type WorkspacePatchPreviewBody = {
 
 type WorkspacePatchApplyBody = WorkspacePatchPreviewBody & {
   expectedHash?: string;
+  expectedPreviewToken?: string;
 };
 
 type WorkspaceShellRunBody = {
@@ -496,12 +497,22 @@ app.post<{ Params: WorkspaceParams; Body: WorkspacePatchApplyBody }>(
       });
     }
 
+    if (typeof request.body.expectedPreviewToken !== "string" || !request.body.expectedPreviewToken.trim()) {
+      return reply.code(400).send({
+        error: {
+          code: "patch_preview_token_required",
+          message: "patch apply preview token is required"
+        }
+      });
+    }
+
     try {
       return await workspaceService.applyPatch(
         request.params.workspaceId,
         request.body.path,
         request.body.newContent,
-        request.body.expectedHash
+        request.body.expectedHash,
+        request.body.expectedPreviewToken
       );
     } catch (error) {
       return sendWorkspaceError(reply, error);
