@@ -145,6 +145,38 @@ function formatCostForAudit(value: number | undefined) {
   return `$${value.toFixed(value < 0.01 ? 6 : 4)}`;
 }
 
+function runUsageAuditEvent(responses: ModelRunResult[]) {
+  const usageResults = responses.filter(
+    (response) => response.usage && Number.isFinite(response.usage.totalTokens) && response.usage.totalTokens >= 0
+  );
+  const totalTokens = usageResults.reduce((sum, response) => sum + (response.usage?.totalTokens ?? 0), 0);
+  const costValues = responses
+    .map((response) => response.usage?.estimatedCostUsd)
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  const knownCostUsd =
+    costValues.length > 0 ? Number(costValues.reduce((sum, value) => sum + value, 0).toFixed(8)) : undefined;
+  const missingUsageCount = responses.length - usageResults.length;
+  const missingCostCount = responses.length - costValues.length;
+  const costComplete = responses.length > 0 && costValues.length === responses.length;
+  const costDetail = costComplete
+    ? `预估成本：${formatCostForAudit(knownCostUsd)}`
+    : knownCostUsd !== undefined
+      ? `已知成本：${formatCostForAudit(knownCostUsd)}`
+      : "预估成本：成本未完整配置";
+  const details = [
+    `响应：${responses.length}`,
+    `用量返回：${usageResults.length}`,
+    `总 token：${totalTokens}`,
+    costDetail,
+    missingUsageCount ? `用量缺失：${missingUsageCount}` : "",
+    missingCostCount ? `成本缺失：${missingCostCount}` : ""
+  ]
+    .filter(Boolean)
+    .join("；");
+
+  return audit("用量与成本已汇总", `${details}。`, costComplete ? "info" : "warning");
+}
+
 function formatRouteKeyForAudit(key: string) {
   const masked = maskSensitiveText(key).replace(/\s+/g, " ").trim();
   if (masked.length <= MAX_ROUTE_AUDIT_KEY_LENGTH) return masked;
@@ -471,6 +503,7 @@ export async function orchestrateRun(request: RunRequest, providers: ProviderAda
   for (const response of blocked) {
     events.push(audit("模型接口错误", `${response.provider}/${response.model}: ${response.error}`, "warning"));
   }
+  events.push(runUsageAuditEvent(responses));
 
   return {
     id: runId,
@@ -538,6 +571,7 @@ export async function* streamRun(
       for (const response of blocked) {
         events.push(audit("模型接口错误", `${response.provider}/${response.model}: ${response.error}`, "warning"));
       }
+      events.push(runUsageAuditEvent(results));
       const run: RunResult = {
         id: runId,
         mode: request.mode,
