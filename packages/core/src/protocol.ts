@@ -129,6 +129,50 @@ export type RunResult = {
   audit: AuditEvent[];
 };
 
+export type WorkspaceDescriptor = {
+  id: string;
+  name: string;
+  root: string;
+  createdAt: string;
+};
+
+export type WorkspaceTreeEntry = {
+  name: string;
+  path: string;
+  kind: "directory" | "file" | "symlink" | "other";
+  size?: number;
+  children?: WorkspaceTreeEntry[];
+};
+
+export type WorkspaceAuditEvent = {
+  id: string;
+  at: string;
+  workspaceId: string;
+  action: "register_workspace" | "file_tree" | "read_file" | "search_workspace";
+  status: "allowed" | "denied" | "error";
+  target?: string;
+  detail: string;
+};
+
+export type WorkspaceFileRead = {
+  workspaceId: string;
+  path: string;
+  size: number;
+  content: string;
+};
+
+export type WorkspaceSearchMatch = {
+  path: string;
+  line: number;
+  preview: string;
+};
+
+export type WorkspaceSearchResult = {
+  workspaceId: string;
+  query: string;
+  matches: WorkspaceSearchMatch[];
+};
+
 export const modelKey = (model: Pick<ModelDescriptor, "provider" | "id">) => `${model.provider}:${model.id}`;
 
 export const textFromContent = (content: ContentPart[]) =>

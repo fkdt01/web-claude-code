@@ -4,10 +4,12 @@ import type { RunRequest } from "@webcode/core";
 import { classifyShellCommand, defaultToolSpecs } from "@webcode/core";
 import { orchestrateRun, providerPayload } from "./orchestrator.js";
 import { createProviderRegistry } from "./providers.js";
+import { createWorkspaceService, WorkspaceError } from "./workspaces.js";
 
 const port = Number(process.env.PORT ?? 8787);
 const host = process.env.HOST ?? "0.0.0.0";
 const providers = createProviderRegistry();
+const workspaceService = await createWorkspaceService();
 
 const app = Fastify({
   logger: true
@@ -16,6 +18,45 @@ const app = Fastify({
 await app.register(cors, {
   origin: process.env.WEB_ORIGIN ?? true
 });
+
+type WorkspaceParams = {
+  workspaceId: string;
+};
+
+type WorkspaceTreeQuery = {
+  path?: string;
+  depth?: string;
+};
+
+type WorkspaceFileQuery = {
+  path?: string;
+};
+
+type WorkspaceSearchQuery = {
+  query?: string;
+  limit?: string;
+};
+
+function sendWorkspaceError(reply: { code(statusCode: number): { send(payload: unknown): unknown } }, error: unknown) {
+  if (error instanceof WorkspaceError) {
+    return reply.code(error.statusCode).send({
+      error: {
+        code: error.code,
+        message: error.message
+      }
+    });
+  }
+  throw error;
+}
+
+function parseBoundedInteger(input: string | undefined, fallback: number, min: number, max: number) {
+  if (!input) return fallback;
+  const value = Number(input);
+  if (!Number.isFinite(value)) {
+    throw new WorkspaceError("invalid_number", "Numeric query parameter is invalid.");
+  }
+  return Math.min(max, Math.max(min, Math.floor(value)));
+}
 
 app.get("/api/health", async () => ({
   ok: true,
@@ -53,6 +94,101 @@ app.post<{ Body: { command?: string } }>("/api/policy/shell", async (request, re
   }
 
   return classifyShellCommand(request.body.command);
+});
+
+app.get("/api/workspaces", async () => ({
+  allowedRoots: workspaceService.listAllowedRoots(),
+  workspaces: workspaceService.listWorkspaces()
+}));
+
+app.post<{ Body: { root?: string; name?: string } }>("/api/workspaces", async (request, reply) => {
+  if (!request.body?.root?.trim()) {
+    return reply.code(400).send({
+      error: {
+        code: "workspace_root_required",
+        message: "workspace root is required"
+      }
+    });
+  }
+
+  try {
+    return {
+      workspace: await workspaceService.register(request.body.root, request.body.name)
+    };
+  } catch (error) {
+    return sendWorkspaceError(reply, error);
+  }
+});
+
+app.get<{ Params: WorkspaceParams; Querystring: WorkspaceTreeQuery }>(
+  "/api/workspaces/:workspaceId/tree",
+  async (request, reply) => {
+    try {
+      return await workspaceService.tree(
+        request.params.workspaceId,
+        request.query.path ?? ".",
+        parseBoundedInteger(request.query.depth, 3, 0, 6)
+      );
+    } catch (error) {
+      return sendWorkspaceError(reply, error);
+    }
+  }
+);
+
+app.get<{ Params: WorkspaceParams; Querystring: WorkspaceFileQuery }>(
+  "/api/workspaces/:workspaceId/files",
+  async (request, reply) => {
+    if (!request.query.path?.trim()) {
+      return reply.code(400).send({
+        error: {
+          code: "file_path_required",
+          message: "file path is required"
+        }
+      });
+    }
+
+    try {
+      return {
+        file: await workspaceService.readFile(request.params.workspaceId, request.query.path)
+      };
+    } catch (error) {
+      return sendWorkspaceError(reply, error);
+    }
+  }
+);
+
+app.get<{ Params: WorkspaceParams; Querystring: WorkspaceSearchQuery }>(
+  "/api/workspaces/:workspaceId/search",
+  async (request, reply) => {
+    if (!request.query.query?.trim()) {
+      return reply.code(400).send({
+        error: {
+          code: "query_required",
+          message: "search query is required"
+        }
+      });
+    }
+
+    try {
+      return await workspaceService.search(
+        request.params.workspaceId,
+        request.query.query,
+        parseBoundedInteger(request.query.limit, 50, 1, 100)
+      );
+    } catch (error) {
+      return sendWorkspaceError(reply, error);
+    }
+  }
+);
+
+app.get<{ Params: WorkspaceParams }>("/api/workspaces/:workspaceId/audit", async (request, reply) => {
+  try {
+    return {
+      audit: workspaceService.auditFor(request.params.workspaceId)
+    };
+  } catch (error) {
+    return sendWorkspaceError(reply, error);
+  }
 });
 
 app
