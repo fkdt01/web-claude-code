@@ -62,6 +62,10 @@ function audit(label: string, detail: string, level: AuditEvent["level"] = "info
   };
 }
 
+function elapsedMs(startedAtMs: number) {
+  return Math.max(0, Date.now() - startedAtMs);
+}
+
 function listModels(providers: ProviderAdapter[]): ModelEntry[] {
   return providers.flatMap((provider) =>
     provider.models().map((model) => ({
@@ -165,6 +169,7 @@ function createChatRequest(
 }
 
 async function collectModel(entry: ModelEntry, request: RunRequest, runId: string): Promise<ModelRunResult> {
+  const startedAtMs = Date.now();
   const chatRequest = createChatRequest(entry, request, runId);
 
   let text = "";
@@ -182,6 +187,7 @@ async function collectModel(entry: ModelEntry, request: RunRequest, runId: strin
           role: entry.model.role,
           ok: false,
           text,
+          durationMs: elapsedMs(startedAtMs),
           error: event.message
         };
       }
@@ -194,6 +200,7 @@ async function collectModel(entry: ModelEntry, request: RunRequest, runId: strin
       role: entry.model.role,
       ok: true,
       text,
+      durationMs: elapsedMs(startedAtMs),
       ...(usage ? { usage } : {})
     };
   } catch (error) {
@@ -204,6 +211,7 @@ async function collectModel(entry: ModelEntry, request: RunRequest, runId: strin
       role: entry.model.role,
       ok: false,
       text,
+      durationMs: elapsedMs(startedAtMs),
       error: error instanceof Error ? error.message : "Unknown provider error"
     };
   }
@@ -295,7 +303,7 @@ class AsyncQueue<T> {
   }
 }
 
-function cancelledModelResult(entry: ModelEntry, text: string): ModelRunResult {
+function cancelledModelResult(entry: ModelEntry, text: string, startedAtMs: number): ModelRunResult {
   return {
     modelKey: entry.key,
     provider: entry.model.provider,
@@ -303,6 +311,7 @@ function cancelledModelResult(entry: ModelEntry, text: string): ModelRunResult {
     role: entry.model.role,
     ok: false,
     text,
+    durationMs: elapsedMs(startedAtMs),
     error: "Run cancelled"
   };
 }
@@ -318,12 +327,13 @@ async function collectModelStream(
   queue: AsyncQueue<RunStreamEvent>,
   signal?: AbortSignal
 ): Promise<ModelRunResult> {
+  const startedAtMs = Date.now();
   const chatRequest = createChatRequest(entry, request, runId, signal);
-  const startedAt = new Date().toISOString();
+  const startedAt = new Date(startedAtMs).toISOString();
   let text = "";
   let usage: TokenUsage | undefined;
 
-  if (signal?.aborted) return cancelledModelResult(entry, text);
+  if (signal?.aborted) return cancelledModelResult(entry, text, startedAtMs);
 
   queue.push({
     type: "model_started",
@@ -337,7 +347,7 @@ async function collectModelStream(
 
   try {
     for await (const event of entry.provider.chat(chatRequest)) {
-      if (signal?.aborted) return cancelledModelResult(entry, text);
+      if (signal?.aborted) return cancelledModelResult(entry, text, startedAtMs);
       if (event.type === "message_delta") text += event.text;
       if (event.type === "usage") usage = event.usage;
       queue.push({
@@ -347,7 +357,7 @@ async function collectModelStream(
         modelKey: entry.key,
         event
       });
-      if (signal?.aborted) return cancelledModelResult(entry, text);
+      if (signal?.aborted) return cancelledModelResult(entry, text, startedAtMs);
       if (event.type === "error") {
         const result: ModelRunResult = {
           modelKey: entry.key,
@@ -356,6 +366,7 @@ async function collectModelStream(
           role: entry.model.role,
           ok: false,
           text,
+          durationMs: elapsedMs(startedAtMs),
           error: event.message
         };
         queue.push({ type: "model_done", runId, at: new Date().toISOString(), result });
@@ -363,7 +374,7 @@ async function collectModelStream(
       }
     }
 
-    if (signal?.aborted) return cancelledModelResult(entry, text);
+    if (signal?.aborted) return cancelledModelResult(entry, text, startedAtMs);
 
     const result: ModelRunResult = {
       modelKey: entry.key,
@@ -372,12 +383,13 @@ async function collectModelStream(
       role: entry.model.role,
       ok: true,
       text,
+      durationMs: elapsedMs(startedAtMs),
       ...(usage ? { usage } : {})
     };
     queue.push({ type: "model_done", runId, at: new Date().toISOString(), result });
     return result;
   } catch (error) {
-    if (signal?.aborted || isAbortError(error)) return cancelledModelResult(entry, text);
+    if (signal?.aborted || isAbortError(error)) return cancelledModelResult(entry, text, startedAtMs);
     const result: ModelRunResult = {
       modelKey: entry.key,
       provider: entry.model.provider,
@@ -385,6 +397,7 @@ async function collectModelStream(
       role: entry.model.role,
       ok: false,
       text,
+      durationMs: elapsedMs(startedAtMs),
       error: error instanceof Error ? error.message : "Unknown provider error"
     };
     queue.push({ type: "model_done", runId, at: new Date().toISOString(), result });

@@ -115,6 +115,7 @@ export type ModelRunResult = {
   role: AgentRole;
   ok: boolean;
   text: string;
+  durationMs?: number;
   usage?: TokenUsage;
   error?: string;
 };
@@ -149,6 +150,7 @@ export type RunHistoryItem = {
   responseCount: number;
   totalTokens: number;
   finalPreview: string;
+  durationMs?: number;
   estimatedCostUsd?: number;
 };
 

@@ -157,6 +157,22 @@ function formatRunCostSummary(result: RunResult | undefined, estimatedCostUsd: n
   return complete ? formatUsd(estimatedCostUsd) : "成本未完整配置";
 }
 
+function formatDurationMs(value: number | undefined) {
+  if (value === undefined || !Number.isFinite(value) || value < 0) return "耗时未知";
+  if (value < 1000) return `${Math.round(value)}ms`;
+  const seconds = value / 1000;
+  if (seconds < 60) return `${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)}s`;
+  return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
+}
+
+function durationBetween(startedAt: string | undefined, completedAt: string | undefined) {
+  if (!startedAt || !completedAt) return undefined;
+  const startedAtMs = Date.parse(startedAt);
+  const completedAtMs = Date.parse(completedAt);
+  if (!Number.isFinite(startedAtMs) || !Number.isFinite(completedAtMs) || completedAtMs < startedAtMs) return undefined;
+  return completedAtMs - startedAtMs;
+}
+
 function formatHistoryTime(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "刚刚";
@@ -485,17 +501,18 @@ function streamEventLogDraft(event: RunStreamEvent): StreamEventLogDraft {
     return {
       at: event.at,
       label: event.result.ok ? "模型已完成" : "模型失败",
-      detail: `${event.result.provider}/${event.result.model} · ${event.result.role}`,
+      detail: `${event.result.provider}/${event.result.model} · ${event.result.role} · ${formatDurationMs(event.result.durationMs)}`,
       level: event.result.ok ? "done" : "warning"
     };
   }
 
   if (event.type === "run_done") {
     const failed = event.run.responses.filter((response) => !response.ok).length;
+    const duration = formatDurationMs(durationBetween(event.run.startedAt, event.run.completedAt));
     return {
       at: event.at,
       label: "运行已完成",
-      detail: `${event.run.responses.length} 个响应${failed ? ` · ${failed} 个失败` : ""}`,
+      detail: `${event.run.responses.length} 个响应${failed ? ` · ${failed} 个失败` : ""} · 总耗时 ${duration}`,
       level: failed ? "warning" : "done"
     };
   }
@@ -749,6 +766,7 @@ export function App() {
   const runCostComplete = Boolean(result?.responses.length) && costValues.length === result?.responses.length;
   const totalEstimatedCost =
     runCostComplete ? costValues.reduce((sum, value) => sum + value, 0) : undefined;
+  const runDurationMs = durationBetween(result?.startedAt, result?.completedAt);
   const workspaceFileHasSensitiveContent = useMemo(
     () => (workspaceFile ? maskSensitiveText(workspaceFile.content) !== workspaceFile.content : false),
     [workspaceFile]
@@ -1203,6 +1221,7 @@ export function App() {
               <strong>{item.prompt}</strong>
               <span>
                 {formatHistoryTime(item.completedAt)} · {item.mode} · {item.selectedModels.length} 模型
+                {item.durationMs !== undefined ? ` · ${formatDurationMs(item.durationMs)}` : ""}
               </span>
             </button>
           ))}
@@ -1248,6 +1267,15 @@ export function App() {
             <div className="avatar">A</div>
             <div className="message-body">
               <h2>编排结果</h2>
+              {result?.responses.length ? (
+                <div className="route-flags">
+                  {result.responses.map((response) => (
+                    <span key={response.modelKey}>
+                      {response.provider}/{response.model} · {formatDurationMs(response.durationMs)}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
               <pre>{result?.final ?? "运行后，这里会展示多模型讨论和最终方案。"}</pre>
             </div>
           </div>
@@ -1731,7 +1759,8 @@ export function App() {
               {!result && !workspaceAudit.length ? <p className="empty">运行任务后会记录模型、工具和策略事件。</p> : null}
             </div>
             <div className="token-line">
-              上次 token：{totalTokens} · 预估成本：{formatRunCostSummary(result, totalEstimatedCost, runCostComplete)}
+              上次 token：{totalTokens} · 预估成本：{formatRunCostSummary(result, totalEstimatedCost, runCostComplete)} · 总耗时：
+              {result ? formatDurationMs(runDurationMs) : "耗时未知"}
             </div>
           </section>
 

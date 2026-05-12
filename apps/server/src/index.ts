@@ -103,6 +103,13 @@ function truncateText(value: string, maxLength: number) {
   return `${cleanValue.slice(0, Math.max(0, maxLength - 1))}…`;
 }
 
+function durationBetween(startedAt: string, completedAt: string) {
+  const startedAtMs = Date.parse(startedAt);
+  const completedAtMs = Date.parse(completedAt);
+  if (!Number.isFinite(startedAtMs) || !Number.isFinite(completedAtMs) || completedAtMs < startedAtMs) return undefined;
+  return completedAtMs - startedAtMs;
+}
+
 function sanitizeRunForHistory(run: RunResult): RunResult {
   return {
     ...run,
@@ -131,6 +138,7 @@ function createRunHistoryItem(run: RunResult, request: RunRequest): RunHistoryIt
     run.responses.length > 0 && costValues.length === run.responses.length
       ? Number(costValues.reduce((sum, value) => sum + value, 0).toFixed(8))
       : undefined;
+  const durationMs = durationBetween(run.startedAt, run.completedAt);
 
   return {
     id: run.id,
@@ -143,6 +151,7 @@ function createRunHistoryItem(run: RunResult, request: RunRequest): RunHistoryIt
     responseCount: run.responses.length,
     totalTokens,
     finalPreview: truncateText(run.final, maxHistoryPreviewLength),
+    ...(durationMs !== undefined ? { durationMs } : {}),
     ...(estimatedCostUsd !== undefined ? { estimatedCostUsd } : {})
   };
 }
