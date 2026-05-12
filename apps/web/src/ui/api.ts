@@ -4,6 +4,7 @@ import type {
   WorkspaceAuditPayload,
   WorkspaceBootstrapPayload,
   WorkspaceFilePayload,
+  WorkspaceSearchPayload,
   WorkspaceTreePayload
 } from "./types";
 
@@ -62,6 +63,11 @@ export async function loadWorkspaceTree(workspaceId: string, path = ".", depth =
 export async function readWorkspaceFile(workspaceId: string, path: string) {
   const query = new URLSearchParams({ path });
   return parseJson<WorkspaceFilePayload>(await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/files?${query}`));
+}
+
+export async function searchWorkspace(workspaceId: string, queryText: string, limit = 20) {
+  const query = new URLSearchParams({ query: queryText, limit: String(limit) });
+  return parseJson<WorkspaceSearchPayload>(await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/search?${query}`));
 }
 
 export async function loadWorkspaceAudit(workspaceId: string) {

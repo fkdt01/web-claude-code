@@ -580,6 +580,79 @@ button {
   gap: 10px;
 }
 
+.workspace-search {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 36px;
+  gap: 8px;
+}
+
+.workspace-search input {
+  min-width: 0;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid #e5e2db;
+  border-radius: 8px;
+  color: #1d1f1f;
+  background: #fbfaf7;
+  outline: none;
+}
+
+.workspace-search input:focus {
+  border-color: #226f6b;
+}
+
+.workspace-search button {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border-radius: 8px;
+  color: #fff;
+  background: #226f6b;
+}
+
+.workspace-search button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.search-results {
+  display: grid;
+  gap: 6px;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.search-result {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  padding: 8px;
+  border: 1px solid #e5e2db;
+  border-radius: 8px;
+  color: #303331;
+  background: #fff;
+  text-align: left;
+}
+
+.search-result:hover {
+  border-color: #226f6b;
+  background: #f0f8f6;
+}
+
+.search-result strong,
+.search-result span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-result span {
+  color: #6b716d;
+  font-size: 12px;
+}
+
 .tree-panel {
   max-height: 260px;
   overflow: auto;

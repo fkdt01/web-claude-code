@@ -13,6 +13,7 @@ import {
   MessageSquarePlus,
   PanelLeft,
   Play,
+  Search,
   SendHorizonal,
   Settings2,
   ShieldCheck,
@@ -27,6 +28,7 @@ import type {
   WorkspaceAuditEvent,
   WorkspaceDescriptor,
   WorkspaceFileRead,
+  WorkspaceSearchMatch,
   WorkspaceTreeEntry
 } from "@webcode/core";
 import { modelKey } from "@webcode/core";
@@ -37,12 +39,28 @@ import {
   loadWorkspaceTree,
   loadWorkspaces,
   readWorkspaceFile,
-  registerWorkspace
+  registerWorkspace,
+  searchWorkspace
 } from "./api";
 import type { BootstrapPayload, ProviderPayload, UiRunState } from "./types";
 
 const DEFAULT_PROMPT =
   "帮我设计一个 Web 版 Claude Code：支持多模型、可审查文件编辑、命令审批、审计日志，并优先考虑 Linux 后端部署。";
+
+const SECRET_VALUE_PATTERN = /((?:api[_-]?key|secret|token|password|passwd)\s*[:=]\s*)[^\s'",;]+/gi;
+const BEARER_TOKEN_PATTERN = /(bearer\s+)[a-z0-9._-]+/gi;
+const OPENAI_KEY_PATTERN = /sk-[a-z0-9_-]+/gi;
+
+function maskSensitiveText(value: string) {
+  return value
+    .replace(SECRET_VALUE_PATTERN, "$1[已脱敏]")
+    .replace(BEARER_TOKEN_PATTERN, "$1[已脱敏]")
+    .replace(OPENAI_KEY_PATTERN, "[已脱敏]");
+}
+
+function maskWorkspaceError(error: unknown, fallback: string) {
+  return maskSensitiveText(error instanceof Error ? error.message : fallback);
+}
 
 const modeCopy: Record<OrchestrationMode, { title: string; body: string }> = {
   single: {
@@ -173,6 +191,9 @@ export function App() {
   const [workspaceTree, setWorkspaceTree] = useState<WorkspaceTreeEntry | null>(null);
   const [workspaceFile, setWorkspaceFile] = useState<WorkspaceFileRead | null>(null);
   const [workspaceAudit, setWorkspaceAudit] = useState<WorkspaceAuditEvent[]>([]);
+  const [workspaceSearchQuery, setWorkspaceSearchQuery] = useState("");
+  const [workspaceSearchResults, setWorkspaceSearchResults] = useState<WorkspaceSearchMatch[]>([]);
+  const [workspaceSearchSubmitted, setWorkspaceSearchSubmitted] = useState(false);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [workspaceLoading, setWorkspaceLoading] = useState(false);
 
@@ -217,7 +238,7 @@ export function App() {
         setWorkspaceTree(treePayload.root);
         setWorkspaceAudit(auditPayload.audit);
       } catch (error) {
-        setWorkspaceError(error instanceof Error ? error.message : "加载工作区失败");
+        setWorkspaceError(maskWorkspaceError(error, "加载工作区失败"));
       } finally {
         setWorkspaceLoading(false);
       }
@@ -255,18 +276,45 @@ export function App() {
     setSelectedModels((current) => (current.includes(key) ? current.filter((item) => item !== key) : [...current, key]));
   }
 
-  async function openWorkspaceFile(entry: WorkspaceTreeEntry) {
-    if (!workspace || entry.kind !== "file") return;
+  async function openWorkspacePath(path: string) {
+    if (!workspace || workspaceLoading) return;
 
     setWorkspaceLoading(true);
     setWorkspaceError(null);
     try {
-      const filePayload = await readWorkspaceFile(workspace.id, entry.path);
+      const filePayload = await readWorkspaceFile(workspace.id, path);
       const auditPayload = await loadWorkspaceAudit(workspace.id);
       setWorkspaceFile(filePayload.file);
       setWorkspaceAudit(auditPayload.audit);
     } catch (error) {
-      setWorkspaceError(error instanceof Error ? error.message : "读取文件失败");
+      setWorkspaceError(maskWorkspaceError(error, "读取文件失败"));
+    } finally {
+      setWorkspaceLoading(false);
+    }
+  }
+
+  async function openWorkspaceFile(entry: WorkspaceTreeEntry) {
+    if (entry.kind !== "file") return;
+    await openWorkspacePath(entry.path);
+  }
+
+  async function runWorkspaceSearch() {
+    const query = workspaceSearchQuery.trim();
+    if (!workspace || workspaceLoading || !query) return;
+
+    setWorkspaceLoading(true);
+    setWorkspaceError(null);
+    setWorkspaceSearchResults([]);
+    setWorkspaceSearchSubmitted(false);
+    try {
+      const result = await searchWorkspace(workspace.id, query, 20);
+      const auditPayload = await loadWorkspaceAudit(workspace.id);
+      setWorkspaceSearchResults(result.matches);
+      setWorkspaceSearchSubmitted(true);
+      setWorkspaceAudit(auditPayload.audit);
+    } catch (error) {
+      setWorkspaceSearchResults([]);
+      setWorkspaceError(maskWorkspaceError(error, "搜索失败"));
     } finally {
       setWorkspaceLoading(false);
     }
@@ -437,6 +485,50 @@ export function App() {
               </div>
             ) : null}
             <div className="workspace-browser">
+              <div className="workspace-search">
+                <input
+                  value={workspaceSearchQuery}
+                  onChange={(event) => {
+                    setWorkspaceSearchQuery(event.target.value);
+                    setWorkspaceSearchResults([]);
+                    setWorkspaceSearchSubmitted(false);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && workspace && !workspaceLoading && workspaceSearchQuery.trim()) {
+                      void runWorkspaceSearch();
+                    }
+                  }}
+                  placeholder="搜索工作区"
+                />
+                <button
+                  type="button"
+                  onClick={() => void runWorkspaceSearch()}
+                  disabled={!workspace || workspaceLoading || !workspaceSearchQuery.trim()}
+                  title="搜索工作区"
+                >
+                  <Search size={15} />
+                </button>
+              </div>
+              {workspaceSearchResults.length ? (
+                <div className="search-results">
+                  {workspaceSearchResults.map((match) => (
+                    <button
+                      className="search-result"
+                      key={`${match.path}:${match.line}:${match.preview}`}
+                      type="button"
+                      onClick={() => void openWorkspacePath(match.path)}
+                      disabled={workspaceLoading}
+                      title={`${match.path}:${match.line}`}
+                    >
+                      <strong>{match.path}</strong>
+                      <span>
+                        {match.line}: {maskSensitiveText(match.preview)}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+              {workspaceSearchSubmitted && !workspaceSearchResults.length ? <p className="empty">未找到匹配结果。</p> : null}
               <div className="tree-panel">
                 {workspaceTree ? (
                   <TreeNode entry={workspaceTree} selectedPath={workspaceFile?.path} onOpen={openWorkspaceFile} />
@@ -449,7 +541,7 @@ export function App() {
                   <strong>{workspaceFile?.path ?? "选择文件预览"}</strong>
                   {workspaceFile ? <span>{workspaceFile.size} bytes</span> : null}
                 </div>
-                <pre>{workspaceFile?.content ?? "文件内容会以只读方式显示在这里。"}</pre>
+                <pre>{workspaceFile ? maskSensitiveText(workspaceFile.content) : "文件内容会以只读方式显示在这里。"}</pre>
               </div>
             </div>
           </section>
@@ -464,14 +556,14 @@ export function App() {
                 <div className={`audit-event ${event.status === "denied" ? "blocked" : event.status}`} key={event.id}>
                   <strong>{event.action}</strong>
                   <span>
-                    {event.target ?? "."} · {event.detail}
+                    {maskSensitiveText(event.target ?? ".")} · {maskSensitiveText(event.detail)}
                   </span>
                 </div>
               ))}
               {(result?.audit ?? []).map((event) => (
                 <div className={`audit-event ${event.level}`} key={event.id}>
                   <strong>{event.label}</strong>
-                  <span>{event.detail}</span>
+                  <span>{maskSensitiveText(event.detail)}</span>
                 </div>
               ))}
               {!result && !workspaceAudit.length ? <p className="empty">运行任务后会记录模型、工具和策略事件。</p> : null}

@@ -6,6 +6,7 @@ import type {
   WorkspaceAuditEvent,
   WorkspaceDescriptor,
   WorkspaceFileRead,
+  WorkspaceSearchResult,
   WorkspaceTreeEntry
 } from "@webcode/core";
 
@@ -40,6 +41,8 @@ export type WorkspaceTreePayload = {
 export type WorkspaceFilePayload = {
   file: WorkspaceFileRead;
 };
+
+export type WorkspaceSearchPayload = WorkspaceSearchResult;
 
 export type WorkspaceAuditPayload = {
   audit: WorkspaceAuditEvent[];
