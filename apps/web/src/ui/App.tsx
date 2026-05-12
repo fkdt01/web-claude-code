@@ -86,6 +86,16 @@ function clampMaxOutputTokens(value: number) {
   return Math.min(MAX_MAX_OUTPUT_TOKENS, Math.max(MIN_MAX_OUTPUT_TOKENS, Math.floor(value)));
 }
 
+function formatPreviewExpiry(value: string) {
+  const expiresAt = new Date(value);
+  if (!Number.isFinite(expiresAt.getTime())) return "未知";
+  return expiresAt.toLocaleTimeString("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit"
+  });
+}
+
 const modeCopy: Record<OrchestrationMode, { title: string; body: string }> = {
   single: {
     title: "单模型",
@@ -523,6 +533,7 @@ export function App() {
   const [patchPreviewDraft, setPatchPreviewDraft] = useState<string | null>(null);
   const [patchPreviewError, setPatchPreviewError] = useState<string | null>(null);
   const [patchPreviewLoading, setPatchPreviewLoading] = useState(false);
+  const [patchPreviewNowMs, setPatchPreviewNowMs] = useState(() => Date.now());
   const [patchApplyLoading, setPatchApplyLoading] = useState(false);
   const [patchApplyMessage, setPatchApplyMessage] = useState<string | null>(null);
   const [shellCommand, setShellCommand] = useState("pwd");
@@ -621,6 +632,13 @@ export function App() {
   useEffect(() => {
     patchDraftRef.current = patchDraft;
   }, [patchDraft]);
+
+  useEffect(() => {
+    if (!patchPreview) return undefined;
+    setPatchPreviewNowMs(Date.now());
+    const timer = window.setInterval(() => setPatchPreviewNowMs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [patchPreview]);
 
   useEffect(() => () => runAbortRef.current?.abort(), []);
 
@@ -727,6 +745,18 @@ export function App() {
     [workspaceFile]
   );
   const workspaceSearchSubmittedQueryLabel = maskSensitiveText(workspaceSearchSubmittedQuery);
+  const patchPreviewExpiresAtMs = patchPreview ? Date.parse(patchPreview.previewExpiresAt) : Number.NaN;
+  const patchPreviewExpiryInvalid = Boolean(patchPreview && !Number.isFinite(patchPreviewExpiresAtMs));
+  const patchPreviewExpired = Boolean(
+    patchPreview && (patchPreviewExpiryInvalid || patchPreviewExpiresAtMs <= patchPreviewNowMs)
+  );
+  const patchPreviewExpiryLabel = patchPreview
+    ? patchPreviewExpiryInvalid
+      ? "预览有效期未知"
+      : patchPreviewExpired
+        ? "预览已过期"
+        : `预览有效至 ${formatPreviewExpiry(patchPreview.previewExpiresAt)}`
+    : "";
   const patchPreviewMatchesDraft =
     Boolean(patchPreview && workspaceFile) && patchPreview?.path === workspaceFile?.path && patchPreviewDraft === patchDraft;
   const patchCanApply = Boolean(
@@ -736,6 +766,7 @@ export function App() {
       patchPreview.baseHash &&
       patchPreview.previewToken &&
       patchPreviewMatchesDraft &&
+      !patchPreviewExpired &&
       !patchPreview.truncated &&
       !workspaceLoading &&
       !patchPreviewLoading &&
@@ -1490,6 +1521,8 @@ export function App() {
                           title={
                             patchPreview.truncated
                               ? "预览已截断，不能应用。"
+                              : patchPreviewExpired
+                                ? "预览 token 已过期，请重新预览。"
                               : patchPreviewMatchesDraft
                                 ? "应用已预览的修改"
                                 : "草稿已变化，请重新预览。"
@@ -1512,6 +1545,9 @@ export function App() {
                       <div className="diff-panel">
                         <div className="diff-summary">
                           <span>{patchPreview.changed ? "等待审批，不会写入文件" : "内容没有变化"}</span>
+                          {patchPreviewExpiryLabel ? (
+                            <span className={patchPreviewExpired ? "expired" : ""}>{patchPreviewExpiryLabel}</span>
+                          ) : null}
                           {patchPreview.truncated ? <span>diff 已截断</span> : null}
                         </div>
                         <div className="diff-lines">

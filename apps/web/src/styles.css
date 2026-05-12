@@ -1031,6 +1031,10 @@ button {
   font-size: 12px;
 }
 
+.diff-summary .expired {
+  color: #a13a2a;
+}
+
 .diff-panel {
   display: grid;
   gap: 6px;
