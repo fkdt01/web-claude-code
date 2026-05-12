@@ -1,8 +1,10 @@
 import type {
   ModelDescriptor,
+  ModelCost,
   ModelEvent,
   ProviderAdapter,
   ProviderId,
+  TokenUsage,
   UnifiedChatRequest,
   UnifiedMessage
 } from "@webcode/core";
@@ -16,13 +18,55 @@ const DEFAULT_CAPABILITIES = {
   contextWindow: 128_000
 };
 
-const nowUsage = (text: string) => {
-  const roughOutputTokens = Math.max(1, Math.ceil(text.length / 4));
+const MOCK_COST: ModelCost = {
+  inputPerMillion: 0,
+  outputPerMillion: 0,
+  currency: "USD"
+};
+
+function parseCostRate(value: string | undefined) {
+  if (!value?.trim()) return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+function costFromEnv(env: Record<string, string | undefined>, prefix: string): ModelCost | undefined {
+  const inputPerMillion = parseCostRate(env[`${prefix}_INPUT_COST_PER_MILLION`]);
+  const outputPerMillion = parseCostRate(env[`${prefix}_OUTPUT_COST_PER_MILLION`]);
+  if (inputPerMillion === undefined && outputPerMillion === undefined) return undefined;
+
   return {
+    ...(inputPerMillion !== undefined ? { inputPerMillion } : {}),
+    ...(outputPerMillion !== undefined ? { outputPerMillion } : {}),
+    currency: "USD"
+  };
+}
+
+function estimateCostUsd(usage: Pick<TokenUsage, "inputTokens" | "outputTokens">, cost: ModelCost | undefined) {
+  if (!cost || (cost.currency && cost.currency !== "USD")) return undefined;
+  if (cost.inputPerMillion === undefined && cost.outputPerMillion === undefined) return undefined;
+  if (!Number.isFinite(usage.inputTokens) || !Number.isFinite(usage.outputTokens)) return undefined;
+  if (cost.inputPerMillion !== undefined && !Number.isFinite(cost.inputPerMillion)) return undefined;
+  if (cost.outputPerMillion !== undefined && !Number.isFinite(cost.outputPerMillion)) return undefined;
+
+  const estimated =
+    (usage.inputTokens * (cost.inputPerMillion ?? 0)) / 1_000_000 +
+    (usage.outputTokens * (cost.outputPerMillion ?? 0)) / 1_000_000;
+  return Number.isFinite(estimated) ? Number(estimated.toFixed(8)) : undefined;
+}
+
+function usageWithCost(usage: TokenUsage, cost: ModelCost | undefined): TokenUsage {
+  const estimatedCostUsd = estimateCostUsd(usage, cost);
+  return estimatedCostUsd === undefined ? usage : { ...usage, estimatedCostUsd };
+}
+
+const nowUsage = (text: string, cost: ModelCost | undefined) => {
+  const roughOutputTokens = Math.max(1, Math.ceil(text.length / 4));
+  return usageWithCost({
     inputTokens: 0,
     outputTokens: roughOutputTokens,
     totalTokens: roughOutputTokens
-  };
+  }, cost);
 };
 
 function latestUserText(messages: UnifiedMessage[]) {
@@ -33,7 +77,7 @@ function latestUserText(messages: UnifiedMessage[]) {
 async function* emitText(request: UnifiedChatRequest, text: string): AsyncIterable<ModelEvent> {
   const key = modelKey(request.model);
   yield { type: "message_delta", runId: request.runId, modelKey: key, text };
-  yield { type: "usage", runId: request.runId, modelKey: key, usage: nowUsage(text) };
+  yield { type: "usage", runId: request.runId, modelKey: key, usage: nowUsage(text, request.model.cost) };
   yield { type: "done", runId: request.runId, modelKey: key };
 }
 
@@ -49,6 +93,7 @@ class MockProvider implements ProviderAdapter {
         label: "Mock Planner",
         role: "planner",
         available: true,
+        cost: MOCK_COST,
         capabilities: { ...DEFAULT_CAPABILITIES, streaming: true, contextWindow: 32_000 }
       },
       {
@@ -57,6 +102,7 @@ class MockProvider implements ProviderAdapter {
         label: "Mock Coder",
         role: "coder",
         available: true,
+        cost: MOCK_COST,
         capabilities: { ...DEFAULT_CAPABILITIES, streaming: true, toolCalls: true, contextWindow: 32_000 }
       },
       {
@@ -65,6 +111,7 @@ class MockProvider implements ProviderAdapter {
         label: "Mock Reviewer",
         role: "reviewer",
         available: true,
+        cost: MOCK_COST,
         capabilities: { ...DEFAULT_CAPABILITIES, streaming: true, contextWindow: 32_000 }
       }
     ];
@@ -91,6 +138,7 @@ type OpenAICompatibleOptions = {
   baseUrl: string;
   model: string;
   role?: ModelDescriptor["role"];
+  cost?: ModelCost | undefined;
 };
 
 class OpenAICompatibleProvider implements ProviderAdapter {
@@ -100,6 +148,7 @@ class OpenAICompatibleProvider implements ProviderAdapter {
   private baseUrl: string;
   private model: string;
   private role: ModelDescriptor["role"];
+  private cost: ModelCost | undefined;
 
   constructor(options: OpenAICompatibleOptions) {
     this.id = options.id;
@@ -108,6 +157,7 @@ class OpenAICompatibleProvider implements ProviderAdapter {
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
     this.model = options.model;
     this.role = options.role ?? "generalist";
+    this.cost = options.cost;
   }
 
   models(): ModelDescriptor[] {
@@ -118,6 +168,7 @@ class OpenAICompatibleProvider implements ProviderAdapter {
         label: this.model,
         role: this.role,
         available: Boolean(this.apiKey),
+        ...(this.cost ? { cost: this.cost } : {}),
         capabilities: { ...DEFAULT_CAPABILITIES, toolCalls: true, contextWindow: 128_000 }
       }
     ];
@@ -175,11 +226,11 @@ class OpenAICompatibleProvider implements ProviderAdapter {
         type: "usage",
         runId: request.runId,
         modelKey: modelKey(request.model),
-        usage: {
+        usage: usageWithCost({
           inputTokens: json.usage.prompt_tokens ?? 0,
           outputTokens: json.usage.completion_tokens ?? 0,
           totalTokens: json.usage.total_tokens ?? 0
-        }
+        }, request.model.cost)
       };
     }
     yield { type: "done", runId: request.runId, modelKey: modelKey(request.model) };
@@ -191,10 +242,12 @@ class AnthropicProvider implements ProviderAdapter {
   displayName = "Anthropic";
   private apiKey: string | undefined;
   private model: string;
+  private cost: ModelCost | undefined;
 
-  constructor(apiKey: string | undefined, model: string) {
+  constructor(apiKey: string | undefined, model: string, cost?: ModelCost) {
     this.apiKey = apiKey;
     this.model = model;
+    this.cost = cost;
   }
 
   models(): ModelDescriptor[] {
@@ -205,6 +258,7 @@ class AnthropicProvider implements ProviderAdapter {
         label: this.model,
         role: "generalist",
         available: Boolean(this.apiKey),
+        ...(this.cost ? { cost: this.cost } : {}),
         capabilities: { ...DEFAULT_CAPABILITIES, toolCalls: true, contextWindow: 200_000 }
       }
     ];
@@ -272,11 +326,11 @@ class AnthropicProvider implements ProviderAdapter {
         type: "usage",
         runId: request.runId,
         modelKey: modelKey(request.model),
-        usage: {
+        usage: usageWithCost({
           inputTokens: json.usage.input_tokens ?? 0,
           outputTokens: json.usage.output_tokens ?? 0,
           totalTokens: (json.usage.input_tokens ?? 0) + (json.usage.output_tokens ?? 0)
-        }
+        }, request.model.cost)
       };
     }
     yield { type: "done", runId: request.runId, modelKey: modelKey(request.model) };
@@ -288,10 +342,12 @@ class GeminiProvider implements ProviderAdapter {
   displayName = "Gemini";
   private apiKey: string | undefined;
   private model: string;
+  private cost: ModelCost | undefined;
 
-  constructor(apiKey: string | undefined, model: string) {
+  constructor(apiKey: string | undefined, model: string, cost?: ModelCost) {
     this.apiKey = apiKey;
     this.model = model;
+    this.cost = cost;
   }
 
   models(): ModelDescriptor[] {
@@ -302,6 +358,7 @@ class GeminiProvider implements ProviderAdapter {
         label: this.model,
         role: "generalist",
         available: Boolean(this.apiKey),
+        ...(this.cost ? { cost: this.cost } : {}),
         capabilities: { ...DEFAULT_CAPABILITIES, vision: true, contextWindow: 1_000_000 }
       }
     ];
@@ -359,11 +416,11 @@ class GeminiProvider implements ProviderAdapter {
         type: "usage",
         runId: request.runId,
         modelKey: modelKey(request.model),
-        usage: {
+        usage: usageWithCost({
           inputTokens: json.usageMetadata.promptTokenCount ?? 0,
           outputTokens: json.usageMetadata.candidatesTokenCount ?? 0,
           totalTokens: json.usageMetadata.totalTokenCount ?? 0
-        }
+        }, request.model.cost)
       };
     }
     yield { type: "done", runId: request.runId, modelKey: modelKey(request.model) };
@@ -373,14 +430,19 @@ class GeminiProvider implements ProviderAdapter {
 export function createProviderRegistry(env = process.env): ProviderAdapter[] {
   return [
     new MockProvider(),
-    new AnthropicProvider(env.ANTHROPIC_API_KEY, env.ANTHROPIC_MODEL ?? "claude-sonnet-4-5"),
+    new AnthropicProvider(
+      env.ANTHROPIC_API_KEY,
+      env.ANTHROPIC_MODEL ?? "claude-sonnet-4-5",
+      costFromEnv(env, "ANTHROPIC")
+    ),
     new OpenAICompatibleProvider({
       id: "openai",
       displayName: "OpenAI",
       apiKey: env.OPENAI_API_KEY,
       baseUrl: env.OPENAI_BASE_URL ?? "https://api.openai.com/v1",
       model: env.OPENAI_MODEL ?? "gpt-5.4-mini",
-      role: "coder"
+      role: "coder",
+      cost: costFromEnv(env, "OPENAI")
     }),
     new OpenAICompatibleProvider({
       id: "openrouter",
@@ -388,8 +450,9 @@ export function createProviderRegistry(env = process.env): ProviderAdapter[] {
       apiKey: env.OPENROUTER_API_KEY,
       baseUrl: "https://openrouter.ai/api/v1",
       model: env.OPENROUTER_MODEL ?? "anthropic/claude-sonnet-4.5",
-      role: "generalist"
+      role: "generalist",
+      cost: costFromEnv(env, "OPENROUTER")
     }),
-    new GeminiProvider(env.GEMINI_API_KEY, env.GEMINI_MODEL ?? "gemini-2.5-pro")
+    new GeminiProvider(env.GEMINI_API_KEY, env.GEMINI_MODEL ?? "gemini-2.5-pro", costFromEnv(env, "GEMINI"))
   ];
 }

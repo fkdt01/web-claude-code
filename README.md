@@ -27,6 +27,10 @@ npm run dev
 
 首次运行不需要模型密钥，系统会启用 mock provider。要接入真实模型，复制 `.env.example` 并配置对应密钥。
 
+如需在界面展示真实模型调用成本，可同时配置各 provider 的 `*_INPUT_COST_PER_MILLION` 和
+`*_OUTPUT_COST_PER_MILLION`，单位为 USD/百万 token。后端会基于 provider 返回的 usage 估算
+`estimatedCostUsd`，未配置费率时只展示 token 数。
+
 ## 支持的编排模式
 
 - `single`：单模型直接回答。

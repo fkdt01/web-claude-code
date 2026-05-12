@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import type {
   ModelDescriptor,
+  ModelCost,
   ModelRunResult,
   OrchestrationMode,
   RunRequest,
@@ -97,6 +98,25 @@ function flattenModels(providers: ProviderPayload[]) {
   );
 }
 
+function formatUsd(value: number | undefined) {
+  if (value === undefined || !Number.isFinite(value) || value < 0) return "未配置";
+  if (value > 0 && value < 0.000001) return "<$0.000001";
+
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: value < 0.01 ? 6 : 4,
+    maximumFractionDigits: value < 0.01 ? 6 : 4
+  }).format(value);
+}
+
+function formatModelCost(cost: ModelCost | undefined) {
+  if (!cost || (cost.currency && cost.currency !== "USD")) return "成本未配置";
+  const input = formatUsd(cost.inputPerMillion);
+  const output = formatUsd(cost.outputPerMillion);
+  return `输入 ${input}/M · 输出 ${output}/M`;
+}
+
 function ModelStatus({ available }: { available: boolean }) {
   return (
     <span className={available ? "model-status ready" : "model-status missing"}>
@@ -125,6 +145,7 @@ function ModelRow({
         <small>
           {providerName} · {model.role} · {model.capabilities.contextWindow.toLocaleString()} ctx
         </small>
+        <small>{formatModelCost(model.cost)}</small>
       </span>
       <ModelStatus available={model.available} />
     </label>
@@ -372,6 +393,12 @@ export function App() {
   const readyCount = models.filter((entry) => entry.model.available).length;
   const totalTokens =
     result?.responses.reduce((sum, response) => sum + (response.usage?.totalTokens ?? 0), 0) ?? 0;
+  const costValues =
+    result?.responses
+      .map((response) => response.usage?.estimatedCostUsd)
+      .filter((value): value is number => typeof value === "number" && Number.isFinite(value)) ?? [];
+  const totalEstimatedCost =
+    costValues.length > 0 ? costValues.reduce((sum, value) => sum + value, 0) : undefined;
   const workspaceFileHasSensitiveContent = useMemo(
     () => (workspaceFile ? maskSensitiveText(workspaceFile.content) !== workspaceFile.content : false),
     [workspaceFile]
@@ -917,7 +944,9 @@ export function App() {
               ))}
               {!result && !workspaceAudit.length ? <p className="empty">运行任务后会记录模型、工具和策略事件。</p> : null}
             </div>
-            <div className="token-line">上次 token：{totalTokens}</div>
+            <div className="token-line">
+              上次 token：{totalTokens} · 预估成本：{formatUsd(totalEstimatedCost)}
+            </div>
           </section>
 
           <button className="primary-run" onClick={run} disabled={!bootstrap || runState.status === "loading"}>
