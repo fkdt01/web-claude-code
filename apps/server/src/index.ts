@@ -1,8 +1,9 @@
+import type { ServerResponse } from "node:http";
 import cors from "@fastify/cors";
 import Fastify from "fastify";
-import type { RunRequest } from "@webcode/core";
+import type { RunRequest, RunStreamEvent } from "@webcode/core";
 import { classifyShellCommand, defaultToolSpecs } from "@webcode/core";
-import { orchestrateRun, providerPayload } from "./orchestrator.js";
+import { orchestrateRun, providerPayload, streamRun } from "./orchestrator.js";
 import { createProviderRegistry } from "./providers.js";
 import { createWorkspaceService, WorkspaceError } from "./workspaces.js";
 
@@ -68,6 +69,21 @@ function parseBoundedInteger(input: string | undefined, fallback: number, min: n
   return Math.min(max, Math.max(min, Math.floor(value)));
 }
 
+function normalizeRunRequest(body: RunRequest): RunRequest {
+  return {
+    prompt: body.prompt,
+    mode: body.mode ?? "committee",
+    selectedModels: body.selectedModels ?? [],
+    ...(body.workspaceId ? { workspaceId: body.workspaceId } : {}),
+    ...(body.maxOutputTokens ? { maxOutputTokens: body.maxOutputTokens } : {})
+  };
+}
+
+function writeSseEvent(raw: ServerResponse, event: RunStreamEvent) {
+  raw.write(`event: ${event.type}\n`);
+  raw.write(`data: ${JSON.stringify(event)}\n\n`);
+}
+
 app.get("/api/health", async () => ({
   ok: true,
   at: new Date().toISOString()
@@ -84,18 +100,52 @@ app.post<{ Body: RunRequest }>("/api/runs", async (request, reply) => {
     return reply.code(400).send({ error: "prompt is required" });
   }
 
-  const result = await orchestrateRun(
-    {
-      prompt: request.body.prompt,
-      mode: request.body.mode ?? "committee",
-      selectedModels: request.body.selectedModels ?? [],
-      ...(request.body.workspaceId ? { workspaceId: request.body.workspaceId } : {}),
-      ...(request.body.maxOutputTokens ? { maxOutputTokens: request.body.maxOutputTokens } : {})
-    },
-    providers
-  );
+  const result = await orchestrateRun(normalizeRunRequest(request.body), providers);
 
   return result;
+});
+
+app.post<{ Body: RunRequest }>("/api/runs/stream", async (request, reply) => {
+  if (!request.body?.prompt?.trim()) {
+    return reply.code(400).send({ error: "prompt is required" });
+  }
+
+  reply.hijack();
+  const abortController = new AbortController();
+  const abortStream = () => abortController.abort();
+  reply.raw.on("close", abortStream);
+  reply.raw.on("error", abortStream);
+  reply.raw.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no"
+  });
+  reply.raw.write(": connected\n\n");
+
+  try {
+    for await (const event of streamRun(normalizeRunRequest(request.body), providers, {
+      signal: abortController.signal
+    })) {
+      if (reply.raw.destroyed || abortController.signal.aborted) {
+        abortController.abort();
+        return;
+      }
+      writeSseEvent(reply.raw, event);
+    }
+  } catch (error) {
+    if (!reply.raw.destroyed && !abortController.signal.aborted) {
+      writeSseEvent(reply.raw, {
+        type: "error",
+        at: new Date().toISOString(),
+        message: error instanceof Error ? error.message : "Unknown stream error"
+      });
+    }
+  } finally {
+    reply.raw.off("close", abortStream);
+    reply.raw.off("error", abortStream);
+    if (!reply.raw.destroyed) reply.raw.end();
+  }
 });
 
 app.post<{ Body: { command?: string } }>("/api/policy/shell", async (request, reply) => {

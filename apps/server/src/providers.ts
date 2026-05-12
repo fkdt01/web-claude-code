@@ -141,6 +141,7 @@ class OpenAICompatibleProvider implements ProviderAdapter {
         Authorization: `Bearer ${this.apiKey}`,
         "Content-Type": "application/json"
       },
+      ...(request.signal ? { signal: request.signal } : {}),
       body: JSON.stringify({
         model: request.model.id,
         temperature: request.temperature ?? 0.2,
@@ -239,6 +240,7 @@ class AnthropicProvider implements ProviderAdapter {
         "anthropic-version": "2023-06-01",
         "Content-Type": "application/json"
       },
+      ...(request.signal ? { signal: request.signal } : {}),
       body: JSON.stringify({
         model: request.model.id,
         max_tokens: request.maxOutputTokens ?? 1200,
@@ -325,6 +327,7 @@ class GeminiProvider implements ProviderAdapter {
     const response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      ...(request.signal ? { signal: request.signal } : {}),
       body: JSON.stringify({
         contents: [{ role: "user", parts: [{ text: prompt }] }],
         generationConfig: {

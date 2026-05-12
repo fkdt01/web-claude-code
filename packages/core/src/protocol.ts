@@ -58,6 +58,7 @@ export type UnifiedChatRequest = {
   runId: string;
   model: ModelDescriptor;
   messages: UnifiedMessage[];
+  signal?: AbortSignal;
   tools?: ToolSpec[];
   temperature?: number;
   maxOutputTokens?: number;
@@ -128,6 +129,49 @@ export type RunResult = {
   responses: ModelRunResult[];
   audit: AuditEvent[];
 };
+
+export type RunStreamEvent =
+  | {
+      type: "run_started";
+      runId: string;
+      at: string;
+      mode: OrchestrationMode;
+      selectedModels: string[];
+      audit: AuditEvent[];
+    }
+  | {
+      type: "model_started";
+      runId: string;
+      at: string;
+      modelKey: string;
+      provider: ProviderId;
+      model: string;
+      role: AgentRole;
+    }
+  | {
+      type: "model_event";
+      runId: string;
+      at: string;
+      modelKey: string;
+      event: ModelEvent;
+    }
+  | {
+      type: "model_done";
+      runId: string;
+      at: string;
+      result: ModelRunResult;
+    }
+  | {
+      type: "run_done";
+      at: string;
+      run: RunResult;
+    }
+  | {
+      type: "error";
+      runId?: string;
+      at: string;
+      message: string;
+    };
 
 export type WorkspaceDescriptor = {
   id: string;
