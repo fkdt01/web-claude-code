@@ -1675,7 +1675,8 @@ export function App() {
                   <div className="shell-output">
                     <div className="diff-summary">
                       <span>
-                        exit {shellResult.exitCode ?? "null"} · cwd {shellResult.cwd} · {shellResult.timedOut ? "已超时" : "已完成"}
+                        exit {shellResult.exitCode ?? "null"} · cwd {shellResult.cwd} · timeout{" "}
+                        {Math.round(shellResult.timeoutMs / 1000)}s · {shellResult.timedOut ? "已超时" : "已完成"}
                       </span>
                       {shellResult.truncated ? <span>输出已截断</span> : null}
                     </div>

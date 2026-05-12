@@ -243,7 +243,9 @@ function appendLimitedOutput(current: string, chunk: Buffer, state: { truncated:
 }
 
 async function executeCommand(executablePath: string, args: string[], cwd: string, timeoutMs: number) {
-  return new Promise<Omit<WorkspaceShellRunResult, "workspaceId" | "command" | "cwd" | "startedAt" | "completedAt" | "policy">>(
+  return new Promise<
+    Omit<WorkspaceShellRunResult, "workspaceId" | "command" | "cwd" | "startedAt" | "completedAt" | "timeoutMs" | "policy">
+  >(
     (resolve) => {
       const outputState = { truncated: false };
       let stdout = "";
@@ -853,7 +855,7 @@ export class WorkspaceService {
         "run_shell",
         result.exitCode === 0 && !result.timedOut ? "allowed" : "error",
         `${portableCwd} $ ${target}`,
-        `Ran allowlisted read-only command; exit=${result.exitCode ?? "null"}${result.timedOut ? ", timed out" : ""}.`
+        `Ran allowlisted read-only command; timeoutMs=${timeoutMs}; exit=${result.exitCode ?? "null"}${result.timedOut ? ", timed out" : ""}.`
       );
 
       return {
@@ -862,6 +864,7 @@ export class WorkspaceService {
         cwd: portableCwd,
         startedAt,
         completedAt,
+        timeoutMs,
         policy,
         ...result
       };

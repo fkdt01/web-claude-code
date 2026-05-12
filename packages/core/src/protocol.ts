@@ -341,6 +341,7 @@ export type WorkspaceShellRunResult = {
   cwd: string;
   startedAt: string;
   completedAt: string;
+  timeoutMs: number;
   exitCode: number | null;
   signal?: string;
   timedOut: boolean;
