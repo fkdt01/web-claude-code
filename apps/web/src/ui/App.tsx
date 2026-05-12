@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   CheckCircle2,
@@ -28,6 +28,7 @@ import type {
   WorkspaceAuditEvent,
   WorkspaceDescriptor,
   WorkspaceFileRead,
+  WorkspacePatchPreview,
   WorkspaceSearchMatch,
   WorkspaceTreeEntry
 } from "@webcode/core";
@@ -38,6 +39,7 @@ import {
   loadWorkspaceAudit,
   loadWorkspaceTree,
   loadWorkspaces,
+  previewWorkspacePatch,
   readWorkspaceFile,
   registerWorkspace,
   searchWorkspace
@@ -194,8 +196,13 @@ export function App() {
   const [workspaceSearchQuery, setWorkspaceSearchQuery] = useState("");
   const [workspaceSearchResults, setWorkspaceSearchResults] = useState<WorkspaceSearchMatch[]>([]);
   const [workspaceSearchSubmitted, setWorkspaceSearchSubmitted] = useState(false);
+  const [patchDraft, setPatchDraft] = useState("");
+  const [patchPreview, setPatchPreview] = useState<WorkspacePatchPreview | null>(null);
+  const [patchPreviewError, setPatchPreviewError] = useState<string | null>(null);
+  const [patchPreviewLoading, setPatchPreviewLoading] = useState(false);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [workspaceLoading, setWorkspaceLoading] = useState(false);
+  const workspaceFilePathRef = useRef<string | null>(null);
 
   useEffect(() => {
     loadBootstrap()
@@ -247,11 +254,19 @@ export function App() {
     void bootstrapWorkspace();
   }, []);
 
+  useEffect(() => {
+    workspaceFilePathRef.current = workspaceFile?.path ?? null;
+  }, [workspaceFile]);
+
   const models = useMemo(() => flattenModels(bootstrap?.providers ?? []), [bootstrap]);
   const result = runState.result;
   const readyCount = models.filter((entry) => entry.model.available).length;
   const totalTokens =
     result?.responses.reduce((sum, response) => sum + (response.usage?.totalTokens ?? 0), 0) ?? 0;
+  const workspaceFileHasSensitiveContent = useMemo(
+    () => (workspaceFile ? maskSensitiveText(workspaceFile.content) !== workspaceFile.content : false),
+    [workspaceFile]
+  );
 
   async function run() {
     const request: RunRequest = {
@@ -281,10 +296,18 @@ export function App() {
 
     setWorkspaceLoading(true);
     setWorkspaceError(null);
+    setWorkspaceFile(null);
+    setPatchDraft("");
+    setPatchPreview(null);
+    setPatchPreviewError(null);
     try {
       const filePayload = await readWorkspaceFile(workspace.id, path);
       const auditPayload = await loadWorkspaceAudit(workspace.id);
-      setWorkspaceFile(filePayload.file);
+      const nextFile = filePayload.file;
+      const hasSensitiveContent = maskSensitiveText(nextFile.content) !== nextFile.content;
+      setWorkspaceFile(nextFile);
+      setPatchDraft(hasSensitiveContent ? "" : nextFile.content);
+      setPatchPreviewError(hasSensitiveContent ? "检测到疑似敏感内容，修改草稿已禁用。" : null);
       setWorkspaceAudit(auditPayload.audit);
     } catch (error) {
       setWorkspaceError(maskWorkspaceError(error, "读取文件失败"));
@@ -317,6 +340,27 @@ export function App() {
       setWorkspaceError(maskWorkspaceError(error, "搜索失败"));
     } finally {
       setWorkspaceLoading(false);
+    }
+  }
+
+  async function runPatchPreview() {
+    if (!workspace || !workspaceFile || workspaceLoading || patchPreviewLoading || workspaceFileHasSensitiveContent) return;
+
+    const previewPath = workspaceFile.path;
+    setPatchPreviewLoading(true);
+    setPatchPreviewError(null);
+    try {
+      const result = await previewWorkspacePatch(workspace.id, previewPath, patchDraft);
+      const auditPayload = await loadWorkspaceAudit(workspace.id);
+      if (workspaceFilePathRef.current !== previewPath) return;
+      setPatchPreview(result);
+      setWorkspaceAudit(auditPayload.audit);
+    } catch (error) {
+      if (workspaceFilePathRef.current !== previewPath) return;
+      setPatchPreview(null);
+      setPatchPreviewError(maskWorkspaceError(error, "预览修改失败"));
+    } finally {
+      setPatchPreviewLoading(false);
     }
   }
 
@@ -542,6 +586,68 @@ export function App() {
                   {workspaceFile ? <span>{workspaceFile.size} bytes</span> : null}
                 </div>
                 <pre>{workspaceFile ? maskSensitiveText(workspaceFile.content) : "文件内容会以只读方式显示在这里。"}</pre>
+              </div>
+              <div className="patch-preview">
+                <div className="file-preview-title">
+                  <strong>修改草稿</strong>
+                  <span>{patchPreviewLoading ? "预览中" : patchPreview ? (patchPreview.changed ? "待审批" : "无变化") : "未预览"}</span>
+                </div>
+                {workspaceFile ? (
+                  <>
+                    <textarea
+                      className="patch-draft"
+                      value={patchDraft}
+                      onChange={(event) => {
+                        setPatchDraft(event.target.value);
+                        setPatchPreview(null);
+                        setPatchPreviewError(null);
+                      }}
+                      disabled={workspaceFileHasSensitiveContent || workspaceLoading || patchPreviewLoading}
+                      placeholder={workspaceFileHasSensitiveContent ? "疑似敏感内容，暂不进入修改草稿。" : "在这里编辑文件内容后预览 diff。"}
+                    />
+                    <div className="patch-actions">
+                      <button
+                        type="button"
+                        onClick={() => void runPatchPreview()}
+                        disabled={!workspace || workspaceLoading || patchPreviewLoading || workspaceFileHasSensitiveContent}
+                      >
+                        <Code2 size={14} />
+                        预览修改
+                      </button>
+                      {patchPreview ? <span>{patchPreview.updatedSize} bytes</span> : null}
+                    </div>
+                    {patchPreviewError ? (
+                      <div className="workspace-error">
+                        <TriangleAlert size={15} />
+                        <span>{patchPreviewError}</span>
+                      </div>
+                    ) : null}
+                    {patchPreview ? (
+                      <div className="diff-panel">
+                        <div className="diff-summary">
+                          <span>{patchPreview.changed ? "等待审批，不会写入文件" : "内容没有变化"}</span>
+                          {patchPreview.truncated ? <span>diff 已截断</span> : null}
+                        </div>
+                        <div className="diff-lines">
+                          {patchPreview.diff.length ? (
+                            patchPreview.diff.map((line, index) => (
+                              <div className={`diff-line ${line.type}`} key={`${line.type}:${line.oldLine}:${line.newLine}:${index}`}>
+                                <span className="diff-sign">{line.type === "add" ? "+" : line.type === "remove" ? "-" : " "}</span>
+                                <span className="diff-gutter">{line.oldLine ?? ""}</span>
+                                <span className="diff-gutter">{line.newLine ?? ""}</span>
+                                <code>{maskSensitiveText(line.content)}</code>
+                              </div>
+                            ))
+                          ) : (
+                            <p className="empty">没有内容变化。</p>
+                          )}
+                        </div>
+                      </div>
+                    ) : null}
+                  </>
+                ) : (
+                  <p className="empty">选择文件后可以预览修改 diff。</p>
+                )}
               </div>
             </div>
           </section>

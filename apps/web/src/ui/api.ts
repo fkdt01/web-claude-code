@@ -4,6 +4,7 @@ import type {
   WorkspaceAuditPayload,
   WorkspaceBootstrapPayload,
   WorkspaceFilePayload,
+  WorkspacePatchPreviewPayload,
   WorkspaceSearchPayload,
   WorkspaceTreePayload
 } from "./types";
@@ -68,6 +69,16 @@ export async function readWorkspaceFile(workspaceId: string, path: string) {
 export async function searchWorkspace(workspaceId: string, queryText: string, limit = 20) {
   const query = new URLSearchParams({ query: queryText, limit: String(limit) });
   return parseJson<WorkspaceSearchPayload>(await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/search?${query}`));
+}
+
+export async function previewWorkspacePatch(workspaceId: string, path: string, newContent: string) {
+  return parseJson<WorkspacePatchPreviewPayload>(
+    await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/patches/preview`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, newContent })
+    })
+  );
 }
 
 export async function loadWorkspaceAudit(workspaceId: string) {
