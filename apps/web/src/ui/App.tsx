@@ -176,39 +176,97 @@ function ModeButton({
 function TreeNode({
   entry,
   selectedPath,
-  onOpen
+  expandedPaths,
+  loadedPaths,
+  loadingPaths,
+  errors,
+  onOpen,
+  onToggleDirectory
 }: {
   entry: WorkspaceTreeEntry;
   selectedPath: string | undefined;
+  expandedPaths: Set<string>;
+  loadedPaths: Set<string>;
+  loadingPaths: Set<string>;
+  errors: Record<string, string>;
   onOpen: (entry: WorkspaceTreeEntry) => void;
+  onToggleDirectory: (entry: WorkspaceTreeEntry) => void;
 }) {
   const isFile = entry.kind === "file";
+  const isDirectory = entry.kind === "directory";
   const isSelected = selectedPath === entry.path;
+  const isExpanded = expandedPaths.has(entry.path);
+  const isLoading = loadingPaths.has(entry.path);
+  const isLoadedDirectory = isDirectory && loadedPaths.has(entry.path);
+  const error = errors[entry.path];
 
   return (
     <div className="tree-node">
       <button
-        className={`tree-item ${isSelected ? "active" : ""}`}
+        className={`tree-item ${isSelected ? "active" : ""} ${isDirectory && isExpanded ? "expanded" : ""} ${isLoading ? "loading" : ""}`}
         type="button"
         onClick={() => {
           if (isFile) onOpen(entry);
+          if (isDirectory) onToggleDirectory(entry);
         }}
-        disabled={!isFile}
+        disabled={isLoading || (!isFile && !isDirectory)}
         title={entry.path}
       >
+        <span className={`tree-chevron ${!isDirectory ? "placeholder" : isExpanded ? "expanded" : ""}`}>
+          {isDirectory ? <ChevronDown size={13} /> : null}
+        </span>
         {isFile ? <FileText size={14} /> : <FolderTree size={14} />}
         <span>{entry.name}</span>
-        {entry.size ? <small>{Math.ceil(entry.size / 1024)} KB</small> : null}
+        {isLoading ? (
+          <small>加载中</small>
+        ) : isFile && entry.size ? (
+          <small>{Math.ceil(entry.size / 1024)} KB</small>
+        ) : isLoadedDirectory ? (
+          <small>{entry.children?.length ?? 0}</small>
+        ) : null}
       </button>
-      {entry.children?.length ? (
+      {error ? <p className="tree-error">{error}</p> : null}
+      {isDirectory && isExpanded && entry.children?.length ? (
         <div className="tree-children">
           {entry.children.map((child) => (
-            <TreeNode key={child.path} entry={child} selectedPath={selectedPath} onOpen={onOpen} />
+            <TreeNode
+              key={child.path}
+              entry={child}
+              selectedPath={selectedPath}
+              expandedPaths={expandedPaths}
+              loadedPaths={loadedPaths}
+              loadingPaths={loadingPaths}
+              errors={errors}
+              onOpen={onOpen}
+              onToggleDirectory={onToggleDirectory}
+            />
           ))}
         </div>
       ) : null}
     </div>
   );
+}
+
+function collectLoadedDirectoryPaths(entry: WorkspaceTreeEntry, paths = new Set<string>()) {
+  if (entry.kind === "directory" && Array.isArray(entry.children)) {
+    paths.add(entry.path);
+    for (const child of entry.children) collectLoadedDirectoryPaths(child, paths);
+  }
+  return paths;
+}
+
+function mergeTreeBranch(current: WorkspaceTreeEntry, branch: WorkspaceTreeEntry): WorkspaceTreeEntry {
+  if (current.path === branch.path) return branch;
+  if (!current.children?.length) return current;
+
+  let changed = false;
+  const children = current.children.map((child) => {
+    const next = mergeTreeBranch(child, branch);
+    if (next !== child) changed = true;
+    return next;
+  });
+
+  return changed ? { ...current, children } : current;
 }
 
 function streamingFinal(responses: ModelRunResult[]) {
@@ -314,6 +372,10 @@ export function App() {
   const [showInspector, setShowInspector] = useState(true);
   const [workspace, setWorkspace] = useState<WorkspaceDescriptor | null>(null);
   const [workspaceTree, setWorkspaceTree] = useState<WorkspaceTreeEntry | null>(null);
+  const [workspaceExpandedPaths, setWorkspaceExpandedPaths] = useState<Set<string>>(() => new Set());
+  const [workspaceLoadedPaths, setWorkspaceLoadedPaths] = useState<Set<string>>(() => new Set());
+  const [workspaceTreeLoadingPaths, setWorkspaceTreeLoadingPaths] = useState<Set<string>>(() => new Set());
+  const [workspaceTreeErrors, setWorkspaceTreeErrors] = useState<Record<string, string>>({});
   const [workspaceFile, setWorkspaceFile] = useState<WorkspaceFileRead | null>(null);
   const [workspaceAudit, setWorkspaceAudit] = useState<WorkspaceAuditEvent[]>([]);
   const [workspaceSearchQuery, setWorkspaceSearchQuery] = useState("");
@@ -333,6 +395,7 @@ export function App() {
   const [shellLoading, setShellLoading] = useState(false);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [workspaceLoading, setWorkspaceLoading] = useState(false);
+  const workspaceIdRef = useRef<string | null>(null);
   const workspaceFilePathRef = useRef<string | null>(null);
   const patchDraftRef = useRef("");
   const patchPreviewRequestRef = useRef(0);
@@ -381,6 +444,11 @@ export function App() {
         const auditPayload = await loadWorkspaceAudit(current.id);
         setWorkspace(current);
         setWorkspaceTree(treePayload.root);
+        const loadedPaths = collectLoadedDirectoryPaths(treePayload.root);
+        setWorkspaceLoadedPaths(loadedPaths);
+        setWorkspaceExpandedPaths(new Set(loadedPaths));
+        setWorkspaceTreeLoadingPaths(new Set());
+        setWorkspaceTreeErrors({});
         setWorkspaceAudit(auditPayload.audit);
       } catch (error) {
         setWorkspaceError(maskWorkspaceError(error, "加载工作区失败"));
@@ -391,6 +459,10 @@ export function App() {
 
     void bootstrapWorkspace();
   }, []);
+
+  useEffect(() => {
+    workspaceIdRef.current = workspace?.id ?? null;
+  }, [workspace]);
 
   useEffect(() => {
     workspaceFilePathRef.current = workspaceFile?.path ?? null;
@@ -544,6 +616,59 @@ export function App() {
     await openWorkspacePath(entry.path);
   }
 
+  async function toggleWorkspaceDirectory(entry: WorkspaceTreeEntry) {
+    if (!workspace || entry.kind !== "directory") return;
+
+    const path = entry.path;
+    if (workspaceLoadedPaths.has(path)) {
+      setWorkspaceExpandedPaths((current) => {
+        const next = new Set(current);
+        if (next.has(path)) next.delete(path);
+        else next.add(path);
+        return next;
+      });
+      return;
+    }
+
+    const workspaceId = workspace.id;
+    setWorkspaceTreeLoadingPaths((current) => new Set(current).add(path));
+    setWorkspaceTreeErrors((current) => {
+      const { [path]: _error, ...rest } = current;
+      return rest;
+    });
+
+    try {
+      const [treePayload, auditPayload] = await Promise.all([
+        loadWorkspaceTree(workspaceId, path, 1),
+        loadWorkspaceAudit(workspaceId)
+      ]);
+      if (workspaceIdRef.current !== workspaceId) return;
+
+      setWorkspaceTree((current) => (current ? mergeTreeBranch(current, treePayload.root) : treePayload.root));
+      setWorkspaceLoadedPaths((current) => {
+        const next = new Set(current);
+        for (const loadedPath of collectLoadedDirectoryPaths(treePayload.root)) next.add(loadedPath);
+        return next;
+      });
+      setWorkspaceExpandedPaths((current) => new Set(current).add(path));
+      setWorkspaceAudit(auditPayload.audit);
+    } catch (error) {
+      if (workspaceIdRef.current !== workspaceId) return;
+      setWorkspaceTreeErrors((current) => ({
+        ...current,
+        [path]: maskWorkspaceError(error, "目录加载失败")
+      }));
+    } finally {
+      if (workspaceIdRef.current === workspaceId) {
+        setWorkspaceTreeLoadingPaths((current) => {
+          const next = new Set(current);
+          next.delete(path);
+          return next;
+        });
+      }
+    }
+  }
+
   async function runWorkspaceSearch() {
     const query = workspaceSearchQuery.trim();
     if (!workspace || workspaceLoading || !query) return;
@@ -624,12 +749,17 @@ export function App() {
       if (patchApplyRequestRef.current !== requestId || workspaceFilePathRef.current !== applyPath) return;
       const nextFile = filePayload.file;
       const hasSensitiveContent = maskSensitiveText(nextFile.content) !== nextFile.content;
+      const loadedPaths = collectLoadedDirectoryPaths(treePayload.root);
       setWorkspaceFile(nextFile);
       setPatchDraft(hasSensitiveContent ? "" : nextFile.content);
       setPatchPreview(null);
       setPatchPreviewDraft(null);
       setPatchPreviewError(hasSensitiveContent ? "检测到疑似敏感内容，修改草稿已禁用。" : null);
       setWorkspaceTree(treePayload.root);
+      setWorkspaceLoadedPaths(loadedPaths);
+      setWorkspaceExpandedPaths(new Set(loadedPaths));
+      setWorkspaceTreeLoadingPaths(new Set());
+      setWorkspaceTreeErrors({});
       setWorkspaceAudit(auditPayload.audit);
       setPatchApplyMessage(applied.changed ? "修改已应用，文件已刷新。" : "内容没有变化，文件已刷新。");
     } catch (error) {
@@ -932,7 +1062,16 @@ export function App() {
               {workspaceSearchSubmitted && !workspaceSearchResults.length ? <p className="empty">未找到匹配结果。</p> : null}
               <div className="tree-panel">
                 {workspaceTree ? (
-                  <TreeNode entry={workspaceTree} selectedPath={workspaceFile?.path} onOpen={openWorkspaceFile} />
+                  <TreeNode
+                    entry={workspaceTree}
+                    selectedPath={workspaceFile?.path}
+                    expandedPaths={workspaceExpandedPaths}
+                    loadedPaths={workspaceLoadedPaths}
+                    loadingPaths={workspaceTreeLoadingPaths}
+                    errors={workspaceTreeErrors}
+                    onOpen={openWorkspaceFile}
+                    onToggleDirectory={toggleWorkspaceDirectory}
+                  />
                 ) : (
                   <p className="empty">正在加载文件树。</p>
                 )}

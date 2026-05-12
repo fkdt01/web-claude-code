@@ -724,7 +724,7 @@ button {
 
 .tree-item {
   display: grid;
-  grid-template-columns: 16px minmax(0, 1fr) auto;
+  grid-template-columns: 14px 16px minmax(0, 1fr) auto;
   align-items: center;
   gap: 6px;
   width: 100%;
@@ -746,6 +746,22 @@ button {
   color: #6b716d;
 }
 
+.tree-item.loading {
+  cursor: wait;
+}
+
+.tree-chevron {
+  display: grid;
+  width: 14px;
+  height: 14px;
+  place-items: center;
+  transition: transform 0.15s ease;
+}
+
+.tree-chevron:not(.expanded):not(.placeholder) {
+  transform: rotate(-90deg);
+}
+
 .tree-item span {
   min-width: 0;
   overflow: hidden;
@@ -756,6 +772,12 @@ button {
 .tree-item small {
   color: #8b918d;
   font-size: 11px;
+}
+
+.tree-error {
+  margin: 0 0 2px 36px;
+  color: #8f3428;
+  font-size: 12px;
 }
 
 .file-preview {
