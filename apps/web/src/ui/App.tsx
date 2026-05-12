@@ -515,7 +515,9 @@ export function App() {
   const [workspaceAudit, setWorkspaceAudit] = useState<WorkspaceAuditEvent[]>([]);
   const [workspaceSearchQuery, setWorkspaceSearchQuery] = useState("");
   const [workspaceSearchResults, setWorkspaceSearchResults] = useState<WorkspaceSearchMatch[]>([]);
-  const [workspaceSearchSubmitted, setWorkspaceSearchSubmitted] = useState(false);
+  const [workspaceSearchSubmittedQuery, setWorkspaceSearchSubmittedQuery] = useState("");
+  const [workspaceSearchError, setWorkspaceSearchError] = useState<string | null>(null);
+  const [workspaceSearchLoading, setWorkspaceSearchLoading] = useState(false);
   const [patchDraft, setPatchDraft] = useState("");
   const [patchPreview, setPatchPreview] = useState<WorkspacePatchPreview | null>(null);
   const [patchPreviewDraft, setPatchPreviewDraft] = useState<string | null>(null);
@@ -539,6 +541,7 @@ export function App() {
   const patchDraftRef = useRef("");
   const patchPreviewRequestRef = useRef(0);
   const patchApplyRequestRef = useRef(0);
+  const workspaceSearchRequestRef = useRef(0);
   const shellPreviewRequestRef = useRef(0);
   const shellRequestRef = useRef(0);
   const routePreviewRequestRef = useRef(0);
@@ -604,6 +607,11 @@ export function App() {
 
   useEffect(() => {
     workspaceIdRef.current = workspace?.id ?? null;
+    workspaceSearchRequestRef.current += 1;
+    setWorkspaceSearchResults([]);
+    setWorkspaceSearchSubmittedQuery("");
+    setWorkspaceSearchError(null);
+    setWorkspaceSearchLoading(false);
   }, [workspace]);
 
   useEffect(() => {
@@ -718,6 +726,7 @@ export function App() {
     () => (workspaceFile ? maskSensitiveText(workspaceFile.content) !== workspaceFile.content : false),
     [workspaceFile]
   );
+  const workspaceSearchSubmittedQueryLabel = maskSensitiveText(workspaceSearchSubmittedQuery);
   const patchPreviewMatchesDraft =
     Boolean(patchPreview && workspaceFile) && patchPreview?.path === workspaceFile?.path && patchPreviewDraft === patchDraft;
   const patchCanApply = Boolean(
@@ -952,23 +961,34 @@ export function App() {
 
   async function runWorkspaceSearch() {
     const query = workspaceSearchQuery.trim();
-    if (!workspace || workspaceLoading || !query) return;
+    if (!workspace || workspaceLoading || workspaceSearchLoading || !query) return;
 
-    setWorkspaceLoading(true);
-    setWorkspaceError(null);
+    const workspaceId = workspace.id;
+    const requestId = workspaceSearchRequestRef.current + 1;
+    workspaceSearchRequestRef.current = requestId;
+    setWorkspaceSearchLoading(true);
+    setWorkspaceSearchError(null);
     setWorkspaceSearchResults([]);
-    setWorkspaceSearchSubmitted(false);
+    setWorkspaceSearchSubmittedQuery(query);
     try {
-      const result = await searchWorkspace(workspace.id, query, 20);
-      const auditPayload = await loadWorkspaceAudit(workspace.id);
+      const result = await searchWorkspace(workspaceId, query, 20);
+      const auditPayload = await loadWorkspaceAudit(workspaceId);
+      if (
+        workspaceSearchRequestRef.current !== requestId ||
+        workspaceIdRef.current !== workspaceId ||
+        workspaceSearchQuery.trim() !== query
+      ) {
+        return;
+      }
       setWorkspaceSearchResults(result.matches);
-      setWorkspaceSearchSubmitted(true);
+      setWorkspaceSearchSubmittedQuery(result.query);
       setWorkspaceAudit(auditPayload.audit);
     } catch (error) {
+      if (workspaceSearchRequestRef.current !== requestId || workspaceIdRef.current !== workspaceId) return;
       setWorkspaceSearchResults([]);
-      setWorkspaceError(maskWorkspaceError(error, "搜索失败"));
+      setWorkspaceSearchError(maskWorkspaceError(error, "搜索失败"));
     } finally {
-      setWorkspaceLoading(false);
+      if (workspaceSearchRequestRef.current === requestId) setWorkspaceSearchLoading(false);
     }
   }
 
@@ -1325,7 +1345,7 @@ export function App() {
             </div>
             <div className="workspace-head">
               <strong>{workspace?.name ?? "未注册"}</strong>
-              <span>{workspaceLoading ? "同步中" : "只读模式"}</span>
+              <span>{workspaceLoading ? "同步中" : workspaceSearchLoading ? "搜索中" : "只读模式"}</span>
             </div>
             {workspaceError ? (
               <div className="workspace-error">
@@ -1338,12 +1358,15 @@ export function App() {
                 <input
                   value={workspaceSearchQuery}
                   onChange={(event) => {
+                    workspaceSearchRequestRef.current += 1;
                     setWorkspaceSearchQuery(event.target.value);
                     setWorkspaceSearchResults([]);
-                    setWorkspaceSearchSubmitted(false);
+                    setWorkspaceSearchSubmittedQuery("");
+                    setWorkspaceSearchError(null);
+                    setWorkspaceSearchLoading(false);
                   }}
                   onKeyDown={(event) => {
-                    if (event.key === "Enter" && workspace && !workspaceLoading && workspaceSearchQuery.trim()) {
+                    if (event.key === "Enter" && workspace && !workspaceLoading && !workspaceSearchLoading && workspaceSearchQuery.trim()) {
                       void runWorkspaceSearch();
                     }
                   }}
@@ -1352,12 +1375,24 @@ export function App() {
                 <button
                   type="button"
                   onClick={() => void runWorkspaceSearch()}
-                  disabled={!workspace || workspaceLoading || !workspaceSearchQuery.trim()}
+                  disabled={!workspace || workspaceLoading || workspaceSearchLoading || !workspaceSearchQuery.trim()}
                   title="搜索工作区"
                 >
                   <Search size={15} />
                 </button>
               </div>
+              {workspaceSearchError ? (
+                <div className="workspace-error">
+                  <TriangleAlert size={15} />
+                  <span>{workspaceSearchError}</span>
+                </div>
+              ) : null}
+              {workspaceSearchLoading ? <p className="empty">{`正在搜索“${workspaceSearchSubmittedQueryLabel}”。`}</p> : null}
+              {workspaceSearchSubmittedQuery && !workspaceSearchLoading && workspaceSearchResults.length ? (
+                <p className="search-summary">
+                  {`“${workspaceSearchSubmittedQueryLabel}” · ${workspaceSearchResults.length} 个结果`}
+                </p>
+              ) : null}
               {workspaceSearchResults.length ? (
                 <div className="search-results">
                   {workspaceSearchResults.map((match) => (
@@ -1377,7 +1412,9 @@ export function App() {
                   ))}
                 </div>
               ) : null}
-              {workspaceSearchSubmitted && !workspaceSearchResults.length ? <p className="empty">未找到匹配结果。</p> : null}
+              {workspaceSearchSubmittedQuery && !workspaceSearchLoading && !workspaceSearchError && !workspaceSearchResults.length ? (
+                <p className="empty">{`未找到“${workspaceSearchSubmittedQueryLabel}”的匹配结果。`}</p>
+              ) : null}
               <div className="tree-panel">
                 {workspaceTree ? (
                   <TreeNode

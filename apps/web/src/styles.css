@@ -742,6 +742,16 @@ button {
   opacity: 0.55;
 }
 
+.search-summary {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: #6b716d;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .search-results {
   display: grid;
   gap: 6px;
