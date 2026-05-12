@@ -9,6 +9,7 @@ import type {
   WorkspacePatchApplyResult,
   WorkspacePatchPreview,
   WorkspaceSearchResult,
+  WorkspaceShellRunResult,
   WorkspaceTreeEntry
 } from "@webcode/core";
 
@@ -49,6 +50,8 @@ export type WorkspaceSearchPayload = WorkspaceSearchResult;
 export type WorkspacePatchPreviewPayload = WorkspacePatchPreview;
 
 export type WorkspacePatchApplyPayload = WorkspacePatchApplyResult;
+
+export type WorkspaceShellRunPayload = WorkspaceShellRunResult;
 
 export type WorkspaceAuditPayload = {
   audit: WorkspaceAuditEvent[];

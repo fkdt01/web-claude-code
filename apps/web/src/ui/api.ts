@@ -7,6 +7,7 @@ import type {
   WorkspacePatchApplyPayload,
   WorkspacePatchPreviewPayload,
   WorkspaceSearchPayload,
+  WorkspaceShellRunPayload,
   WorkspaceTreePayload
 } from "./types";
 
@@ -171,6 +172,16 @@ export async function applyWorkspacePatch(workspaceId: string, path: string, new
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ path, newContent, expectedHash })
+    })
+  );
+}
+
+export async function runWorkspaceShell(workspaceId: string, command: string, cwd = ".", timeoutMs = 5000) {
+  return parseJson<WorkspaceShellRunPayload>(
+    await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/shell`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ command, cwd, timeoutMs })
     })
   );
 }

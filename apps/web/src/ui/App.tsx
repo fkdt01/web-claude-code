@@ -34,6 +34,7 @@ import type {
   WorkspaceFileRead,
   WorkspacePatchPreview,
   WorkspaceSearchMatch,
+  WorkspaceShellRunResult,
   WorkspaceTreeEntry
 } from "@webcode/core";
 import { modelKey } from "@webcode/core";
@@ -46,6 +47,7 @@ import {
   previewWorkspacePatch,
   readWorkspaceFile,
   registerWorkspace,
+  runWorkspaceShell,
   searchWorkspace,
   streamRun
 } from "./api";
@@ -319,12 +321,18 @@ export function App() {
   const [patchPreviewLoading, setPatchPreviewLoading] = useState(false);
   const [patchApplyLoading, setPatchApplyLoading] = useState(false);
   const [patchApplyMessage, setPatchApplyMessage] = useState<string | null>(null);
+  const [shellCommand, setShellCommand] = useState("pwd");
+  const [shellCwd, setShellCwd] = useState(".");
+  const [shellResult, setShellResult] = useState<WorkspaceShellRunResult | null>(null);
+  const [shellError, setShellError] = useState<string | null>(null);
+  const [shellLoading, setShellLoading] = useState(false);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [workspaceLoading, setWorkspaceLoading] = useState(false);
   const workspaceFilePathRef = useRef<string | null>(null);
   const patchDraftRef = useRef("");
   const patchPreviewRequestRef = useRef(0);
   const patchApplyRequestRef = useRef(0);
+  const shellRequestRef = useRef(0);
   const runAbortRef = useRef<AbortController | null>(null);
   const runRequestRef = useRef(0);
 
@@ -479,6 +487,8 @@ export function App() {
     setPatchPreviewLoading(false);
     setPatchApplyLoading(false);
     setPatchApplyMessage(null);
+    setShellResult(null);
+    setShellError(null);
     try {
       const filePayload = await readWorkspaceFile(workspace.id, path);
       const auditPayload = await loadWorkspaceAudit(workspace.id);
@@ -598,6 +608,42 @@ export function App() {
       if (patchApplyRequestRef.current === requestId) {
         setPatchApplyLoading(false);
       }
+    }
+  }
+
+  async function runShellCommand() {
+    const command = shellCommand.trim();
+    if (!workspace || workspaceLoading || shellLoading || !command) return;
+
+    const workspaceId = workspace.id;
+    const requestId = shellRequestRef.current + 1;
+    shellRequestRef.current = requestId;
+    setShellLoading(true);
+    setShellError(null);
+    setShellResult(null);
+    try {
+      const result = await runWorkspaceShell(workspaceId, command, shellCwd.trim() || ".", 5000);
+      if (shellRequestRef.current !== requestId || workspace?.id !== workspaceId) return;
+      setShellResult(result);
+      try {
+        const auditPayload = await loadWorkspaceAudit(workspaceId);
+        if (shellRequestRef.current !== requestId || workspace?.id !== workspaceId) return;
+        setWorkspaceAudit(auditPayload.audit);
+      } catch {
+        setShellError("命令已完成，但审计刷新失败。");
+      }
+    } catch (error) {
+      if (shellRequestRef.current !== requestId || workspace?.id !== workspaceId) return;
+      setShellError(maskWorkspaceError(error, "shell 命令运行失败"));
+      try {
+        const auditPayload = await loadWorkspaceAudit(workspaceId);
+        if (shellRequestRef.current !== requestId || workspace?.id !== workspaceId) return;
+        setWorkspaceAudit(auditPayload.audit);
+      } catch {
+        // Keep the shell error visible even if the audit refresh fails.
+      }
+    } finally {
+      if (shellRequestRef.current === requestId) setShellLoading(false);
     }
   }
 
@@ -917,6 +963,61 @@ export function App() {
                   </>
                 ) : (
                   <p className="empty">选择文件后可以预览修改 diff。</p>
+                )}
+              </div>
+              <div className="shell-panel">
+                <div className="file-preview-title">
+                  <strong>只读 shell</strong>
+                  <span>{shellLoading ? "运行中" : shellResult ? `exit ${shellResult.exitCode ?? "null"}` : "手动触发"}</span>
+                </div>
+                <div className="shell-controls">
+                  <input
+                    value={shellCommand}
+                    onChange={(event) => {
+                      setShellCommand(event.target.value);
+                      setShellError(null);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && workspace && !shellLoading && shellCommand.trim()) {
+                        void runShellCommand();
+                      }
+                    }}
+                    placeholder="pwd"
+                  />
+                  <input
+                    value={shellCwd}
+                    onChange={(event) => setShellCwd(event.target.value)}
+                    placeholder="."
+                    title="工作目录"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void runShellCommand()}
+                    disabled={!workspace || workspaceLoading || shellLoading || !shellCommand.trim()}
+                    title="运行只读 shell 命令"
+                  >
+                    <TerminalSquare size={15} />
+                  </button>
+                </div>
+                {shellError ? (
+                  <div className="workspace-error">
+                    <TriangleAlert size={15} />
+                    <span>{shellError}</span>
+                  </div>
+                ) : null}
+                {shellResult ? (
+                  <div className="shell-output">
+                    <div className="diff-summary">
+                      <span>
+                        exit {shellResult.exitCode ?? "null"} · cwd {shellResult.cwd} · {shellResult.timedOut ? "已超时" : "已完成"}
+                      </span>
+                      {shellResult.truncated ? <span>输出已截断</span> : null}
+                    </div>
+                    <pre>{maskSensitiveText(shellResult.stdout || "stdout 为空。")}</pre>
+                    {shellResult.stderr ? <pre className="shell-stderr">{maskSensitiveText(shellResult.stderr)}</pre> : null}
+                  </div>
+                ) : (
+                  <p className="empty">仅调用后端受保护的手动 shell API；非 Linux 后端会返回禁用错误。</p>
                 )}
               </div>
             </div>
