@@ -126,6 +126,11 @@ function formatModelCost(cost: ModelCost | undefined) {
   return `输入 ${input}/M · 输出 ${output}/M`;
 }
 
+function formatRunCostSummary(result: RunResult | undefined, estimatedCostUsd: number | undefined, complete: boolean) {
+  if (!result?.responses.length) return formatUsd(undefined);
+  return complete ? formatUsd(estimatedCostUsd) : "成本未完整配置";
+}
+
 function formatHistoryTime(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "刚刚";
@@ -697,8 +702,9 @@ export function App() {
     result?.responses
       .map((response) => response.usage?.estimatedCostUsd)
       .filter((value): value is number => typeof value === "number" && Number.isFinite(value)) ?? [];
+  const runCostComplete = Boolean(result?.responses.length) && costValues.length === result?.responses.length;
   const totalEstimatedCost =
-    costValues.length > 0 ? costValues.reduce((sum, value) => sum + value, 0) : undefined;
+    runCostComplete ? costValues.reduce((sum, value) => sum + value, 0) : undefined;
   const workspaceFileHasSensitiveContent = useMemo(
     () => (workspaceFile ? maskSensitiveText(workspaceFile.content) !== workspaceFile.content : false),
     [workspaceFile]
@@ -1596,7 +1602,7 @@ export function App() {
               {!result && !workspaceAudit.length ? <p className="empty">运行任务后会记录模型、工具和策略事件。</p> : null}
             </div>
             <div className="token-line">
-              上次 token：{totalTokens} · 预估成本：{formatUsd(totalEstimatedCost)}
+              上次 token：{totalTokens} · 预估成本：{formatRunCostSummary(result, totalEstimatedCost, runCostComplete)}
             </div>
           </section>
 
