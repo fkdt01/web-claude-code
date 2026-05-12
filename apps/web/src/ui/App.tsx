@@ -62,6 +62,9 @@ import type { BootstrapPayload, ProviderPayload, UiRunState } from "./types";
 
 const DEFAULT_PROMPT =
   "帮我设计一个 Web 版 Claude Code：支持多模型、可审查文件编辑、命令审批、审计日志，并优先考虑 Linux 后端部署。";
+const DEFAULT_MAX_OUTPUT_TOKENS = 1200;
+const MIN_MAX_OUTPUT_TOKENS = 1;
+const MAX_MAX_OUTPUT_TOKENS = 200_000;
 
 const SECRET_VALUE_PATTERN = /((?:api[_-]?key|secret|token|password|passwd)\s*[:=]\s*)[^\s'",;]+/gi;
 const BEARER_TOKEN_PATTERN = /(bearer\s+)[a-z0-9._-]+/gi;
@@ -76,6 +79,11 @@ function maskSensitiveText(value: string) {
 
 function maskWorkspaceError(error: unknown, fallback: string) {
   return maskSensitiveText(error instanceof Error ? error.message : fallback);
+}
+
+function clampMaxOutputTokens(value: number) {
+  if (!Number.isFinite(value)) return DEFAULT_MAX_OUTPUT_TOKENS;
+  return Math.min(MAX_MAX_OUTPUT_TOKENS, Math.max(MIN_MAX_OUTPUT_TOKENS, Math.floor(value)));
 }
 
 const modeCopy: Record<OrchestrationMode, { title: string; body: string }> = {
@@ -487,6 +495,7 @@ export function App() {
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
   const [mode, setMode] = useState<OrchestrationMode>("committee");
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
+  const [maxOutputTokens, setMaxOutputTokens] = useState(DEFAULT_MAX_OUTPUT_TOKENS);
   const [routePreview, setRoutePreview] = useState<RoutePreview | null>(null);
   const [routePreviewError, setRoutePreviewError] = useState<string | null>(null);
   const [routePreviewLoading, setRoutePreviewLoading] = useState(false);
@@ -656,7 +665,7 @@ export function App() {
       prompt: "",
       mode,
       selectedModels,
-      maxOutputTokens: 1200
+      maxOutputTokens
     })
       .then((preview) => {
         if (routePreviewRequestRef.current !== requestId) return;
@@ -670,7 +679,7 @@ export function App() {
       .finally(() => {
         if (routePreviewRequestRef.current === requestId) setRoutePreviewLoading(false);
       });
-  }, [bootstrap, mode, selectedModels]);
+  }, [bootstrap, mode, selectedModels, maxOutputTokens]);
 
   async function refreshRunHistory() {
     const requestId = runHistoryRequestRef.current + 1;
@@ -775,7 +784,7 @@ export function App() {
       mode,
       selectedModels,
       ...(workspace ? { workspaceId: workspace.id } : {}),
-      maxOutputTokens: 1200
+      maxOutputTokens
     };
     const requestId = runRequestRef.current + 1;
     runRequestRef.current = requestId;
@@ -1238,6 +1247,20 @@ export function App() {
               ) : null}
               {routePreview ? (
                 <>
+                  <div className="route-controls">
+                    <label>
+                      <span>输出上限</span>
+                      <input
+                        type="number"
+                        min={MIN_MAX_OUTPUT_TOKENS}
+                        max={MAX_MAX_OUTPUT_TOKENS}
+                        step={100}
+                        value={maxOutputTokens}
+                        onChange={(event) => setMaxOutputTokens(clampMaxOutputTokens(Number(event.target.value)))}
+                        title="最大输出 token 数"
+                      />
+                    </label>
+                  </div>
                   <div className="route-flags">
                     <span>{routePreview.mode}</span>
                     <span>{routePreview.fallbackUsed ? "fallback mock" : "按选择路由"}</span>
