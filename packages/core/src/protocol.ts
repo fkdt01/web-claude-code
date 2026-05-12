@@ -174,6 +174,8 @@ export type RoutePreview = {
   selectedModels: string[];
   unknownModels: string[];
   unavailableModels: string[];
+  unknownCostModels: string[];
+  unknownCostCount: number;
   fallbackUsed: boolean;
   models: RoutePreviewModel[];
   estimatedMaxOutputCostUsd?: number;

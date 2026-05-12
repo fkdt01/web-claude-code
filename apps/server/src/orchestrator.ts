@@ -506,6 +506,9 @@ export function previewRoute(request: RunRequest, providers: ProviderAdapter[]):
   const costValues = models
     .map((model) => model.estimatedMaxOutputCostUsd)
     .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  const unknownCostModels = models
+    .filter((model) => model.estimatedMaxOutputCostUsd === undefined)
+    .map((model) => model.key);
   const estimatedMaxOutputCostUsd =
     models.length > 0 && costValues.length === models.length
       ? Number(costValues.reduce((sum, value) => sum + value, 0).toFixed(8))
@@ -518,6 +521,8 @@ export function previewRoute(request: RunRequest, providers: ProviderAdapter[]):
     selectedModels: entries.map((entry) => entry.key),
     unknownModels,
     unavailableModels,
+    unknownCostModels,
+    unknownCostCount: unknownCostModels.length,
     fallbackUsed,
     models,
     ...(estimatedMaxOutputCostUsd !== undefined ? { estimatedMaxOutputCostUsd } : {})

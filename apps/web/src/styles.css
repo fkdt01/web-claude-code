@@ -480,7 +480,8 @@ button {
 
 .route-preview-head span,
 .route-flags span,
-.route-models span {
+.route-models span,
+.route-note {
   color: #6b716d;
   font-size: 12px;
 }
@@ -501,6 +502,13 @@ button {
 .route-models {
   display: flex;
   gap: 6px;
+}
+
+.route-note {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .model-list {

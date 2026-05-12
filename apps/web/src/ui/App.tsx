@@ -1005,7 +1005,11 @@ export function App() {
                   {routePreviewLoading
                     ? "计算中"
                     : routePreview
-                      ? `${routePreview.selectedModels.length} 个模型 · ${formatUsd(routePreview.estimatedMaxOutputCostUsd)}`
+                      ? `${routePreview.selectedModels.length} 个模型 · ${
+                          routePreview.unknownCostCount
+                            ? `${routePreview.unknownCostCount} 个成本未配置`
+                            : formatUsd(routePreview.estimatedMaxOutputCostUsd)
+                        }`
                       : "未就绪"}
                 </span>
               </div>
@@ -1021,6 +1025,7 @@ export function App() {
                     <span>{routePreview.mode}</span>
                     <span>{routePreview.fallbackUsed ? "fallback mock" : "按选择路由"}</span>
                     <span>{routePreview.maxOutputTokens} max tokens</span>
+                    {routePreview.unknownCostCount ? <span>{routePreview.unknownCostCount} 个成本未配置</span> : null}
                   </div>
                   <div className="route-models">
                     {routePreview.models.map((model) => (
@@ -1034,6 +1039,9 @@ export function App() {
                       跳过：
                       {[...routePreview.unavailableModels, ...routePreview.unknownModels].join("、")}
                     </p>
+                  ) : null}
+                  {routePreview.unknownCostModels.length ? (
+                    <p className="route-note">成本未配置：{routePreview.unknownCostModels.join("、")}</p>
                   ) : null}
                 </>
               ) : null}
