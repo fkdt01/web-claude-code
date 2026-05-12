@@ -29,6 +29,8 @@ const systemPrompt = `You are a web coding agent. Work from explicit user intent
 const SECRET_VALUE_PATTERN = /((?:api[_-]?key|secret|token|password|passwd)\s*[:=]\s*)[^\s'",;]+/gi;
 const BEARER_TOKEN_PATTERN = /(bearer\s+)[a-z0-9._-]+/gi;
 const OPENAI_KEY_PATTERN = /sk-[a-z0-9_-]+/gi;
+const MAX_ROUTE_AUDIT_KEYS = 8;
+const MAX_ROUTE_AUDIT_KEY_LENGTH = 120;
 
 const maskSensitiveText = (value: string) =>
   value
@@ -95,6 +97,42 @@ function estimateMaxOutputCostUsd(entry: ModelEntry, maxOutputTokens: number) {
 
   const estimated = (maxOutputTokens * outputPerMillion) / 1_000_000;
   return Number.isFinite(estimated) ? Number(estimated.toFixed(8)) : undefined;
+}
+
+function formatCostForAudit(value: number | undefined) {
+  if (value === undefined || !Number.isFinite(value)) return "成本未完整配置";
+  return `$${value.toFixed(value < 0.01 ? 6 : 4)}`;
+}
+
+function formatRouteKeyForAudit(key: string) {
+  const masked = maskSensitiveText(key).replace(/\s+/g, " ").trim();
+  if (masked.length <= MAX_ROUTE_AUDIT_KEY_LENGTH) return masked;
+  return `${masked.slice(0, MAX_ROUTE_AUDIT_KEY_LENGTH - 3)}...`;
+}
+
+function formatRouteKeysForAudit(keys: string[]) {
+  const visible = keys.slice(0, MAX_ROUTE_AUDIT_KEYS).map(formatRouteKeyForAudit);
+  const hiddenCount = keys.length - visible.length;
+  return hiddenCount > 0 ? `${visible.join("、")}、另 ${hiddenCount} 个` : visible.join("、");
+}
+
+function routeAuditEvent(request: RunRequest, providers: ProviderAdapter[]) {
+  const route = previewRoute(request, providers);
+  const details = [
+    `实际模型：${route.selectedModels.length ? formatRouteKeysForAudit(route.selectedModels) : "无可用模型"}`,
+    route.fallbackUsed ? "已 fallback 到 mock" : "按选择路由",
+    `输出上限：${route.maxOutputTokens} tokens`,
+    route.unknownCostCount
+      ? `成本未配置：${formatRouteKeysForAudit(route.unknownCostModels)}`
+      : `最大输出成本：${formatCostForAudit(route.estimatedMaxOutputCostUsd)}`,
+    route.unavailableModels.length || route.unknownModels.length
+      ? `已跳过：${formatRouteKeysForAudit([...route.unavailableModels, ...route.unknownModels])}`
+      : ""
+  ]
+    .filter(Boolean)
+    .join("；");
+
+  return audit("路由已解析", `${details}。`);
 }
 
 function createChatRequest(
@@ -361,6 +399,7 @@ export async function orchestrateRun(request: RunRequest, providers: ProviderAda
 
   const events: AuditEvent[] = [
     audit("任务已创建", `编排模式：${request.mode}，模型数量：${entries.length}。`),
+    routeAuditEvent(request, providers),
     audit("工具策略已加载", `${defaultToolSpecs.length} 个工具规格已接入策略检查。`),
     ...(request.workspaceContext
       ? [
@@ -404,6 +443,7 @@ export async function* streamRun(
   const { entries } = routeEntries(request, providers);
   const events: AuditEvent[] = [
     audit("任务已创建", `编排模式：${request.mode}，模型数量：${entries.length}。`),
+    routeAuditEvent(request, providers),
     audit("工具策略已加载", `${defaultToolSpecs.length} 个工具规格已接入策略检查。`),
     ...(request.workspaceContext
       ? [
