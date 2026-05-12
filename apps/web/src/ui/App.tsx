@@ -34,6 +34,7 @@ import type {
 } from "@webcode/core";
 import { modelKey } from "@webcode/core";
 import {
+  applyWorkspacePatch,
   createRun,
   loadBootstrap,
   loadWorkspaceAudit,
@@ -198,11 +199,17 @@ export function App() {
   const [workspaceSearchSubmitted, setWorkspaceSearchSubmitted] = useState(false);
   const [patchDraft, setPatchDraft] = useState("");
   const [patchPreview, setPatchPreview] = useState<WorkspacePatchPreview | null>(null);
+  const [patchPreviewDraft, setPatchPreviewDraft] = useState<string | null>(null);
   const [patchPreviewError, setPatchPreviewError] = useState<string | null>(null);
   const [patchPreviewLoading, setPatchPreviewLoading] = useState(false);
+  const [patchApplyLoading, setPatchApplyLoading] = useState(false);
+  const [patchApplyMessage, setPatchApplyMessage] = useState<string | null>(null);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [workspaceLoading, setWorkspaceLoading] = useState(false);
   const workspaceFilePathRef = useRef<string | null>(null);
+  const patchDraftRef = useRef("");
+  const patchPreviewRequestRef = useRef(0);
+  const patchApplyRequestRef = useRef(0);
 
   useEffect(() => {
     loadBootstrap()
@@ -258,6 +265,10 @@ export function App() {
     workspaceFilePathRef.current = workspaceFile?.path ?? null;
   }, [workspaceFile]);
 
+  useEffect(() => {
+    patchDraftRef.current = patchDraft;
+  }, [patchDraft]);
+
   const models = useMemo(() => flattenModels(bootstrap?.providers ?? []), [bootstrap]);
   const result = runState.result;
   const readyCount = models.filter((entry) => entry.model.available).length;
@@ -266,6 +277,20 @@ export function App() {
   const workspaceFileHasSensitiveContent = useMemo(
     () => (workspaceFile ? maskSensitiveText(workspaceFile.content) !== workspaceFile.content : false),
     [workspaceFile]
+  );
+  const patchPreviewMatchesDraft =
+    Boolean(patchPreview && workspaceFile) && patchPreview?.path === workspaceFile?.path && patchPreviewDraft === patchDraft;
+  const patchCanApply = Boolean(
+    workspace &&
+      workspaceFile &&
+      patchPreview?.changed &&
+      patchPreview.baseHash &&
+      patchPreviewMatchesDraft &&
+      !patchPreview.truncated &&
+      !workspaceLoading &&
+      !patchPreviewLoading &&
+      !patchApplyLoading &&
+      !workspaceFileHasSensitiveContent
   );
 
   async function run() {
@@ -294,12 +319,19 @@ export function App() {
   async function openWorkspacePath(path: string) {
     if (!workspace || workspaceLoading) return;
 
+    workspaceFilePathRef.current = null;
+    patchPreviewRequestRef.current += 1;
+    patchApplyRequestRef.current += 1;
     setWorkspaceLoading(true);
     setWorkspaceError(null);
     setWorkspaceFile(null);
     setPatchDraft("");
     setPatchPreview(null);
+    setPatchPreviewDraft(null);
     setPatchPreviewError(null);
+    setPatchPreviewLoading(false);
+    setPatchApplyLoading(false);
+    setPatchApplyMessage(null);
     try {
       const filePayload = await readWorkspaceFile(workspace.id, path);
       const auditPayload = await loadWorkspaceAudit(workspace.id);
@@ -344,23 +376,81 @@ export function App() {
   }
 
   async function runPatchPreview() {
-    if (!workspace || !workspaceFile || workspaceLoading || patchPreviewLoading || workspaceFileHasSensitiveContent) return;
+    if (!workspace || !workspaceFile || workspaceLoading || patchPreviewLoading || patchApplyLoading || workspaceFileHasSensitiveContent) return;
 
     const previewPath = workspaceFile.path;
+    const previewDraft = patchDraft;
+    const requestId = patchPreviewRequestRef.current + 1;
+    patchPreviewRequestRef.current = requestId;
     setPatchPreviewLoading(true);
     setPatchPreviewError(null);
+    setPatchApplyMessage(null);
     try {
-      const result = await previewWorkspacePatch(workspace.id, previewPath, patchDraft);
+      const result = await previewWorkspacePatch(workspace.id, previewPath, previewDraft);
       const auditPayload = await loadWorkspaceAudit(workspace.id);
-      if (workspaceFilePathRef.current !== previewPath) return;
+      if (
+        patchPreviewRequestRef.current !== requestId ||
+        workspaceFilePathRef.current !== previewPath ||
+        patchDraftRef.current !== previewDraft
+      ) {
+        return;
+      }
       setPatchPreview(result);
+      setPatchPreviewDraft(previewDraft);
       setWorkspaceAudit(auditPayload.audit);
     } catch (error) {
-      if (workspaceFilePathRef.current !== previewPath) return;
+      if (patchPreviewRequestRef.current !== requestId || workspaceFilePathRef.current !== previewPath) return;
       setPatchPreview(null);
+      setPatchPreviewDraft(null);
       setPatchPreviewError(maskWorkspaceError(error, "预览修改失败"));
     } finally {
-      setPatchPreviewLoading(false);
+      if (patchPreviewRequestRef.current === requestId) {
+        setPatchPreviewLoading(false);
+      }
+    }
+  }
+
+  async function runPatchApply() {
+    if (!patchCanApply || !workspace || !workspaceFile || !patchPreview) return;
+
+    if (!window.confirm(`应用对 ${patchPreview.path} 的修改？此操作会写入工作区文件。`)) return;
+
+    const applyPath = workspaceFile.path;
+    const applyDraft = patchDraft;
+    const expectedHash = patchPreview.baseHash;
+    const requestId = patchApplyRequestRef.current + 1;
+    patchApplyRequestRef.current = requestId;
+    setPatchApplyLoading(true);
+    setPatchPreviewError(null);
+    setPatchApplyMessage(null);
+    try {
+      const applied = await applyWorkspacePatch(workspace.id, applyPath, applyDraft, expectedHash);
+      const [filePayload, treePayload, auditPayload] = await Promise.all([
+        readWorkspaceFile(workspace.id, applyPath),
+        loadWorkspaceTree(workspace.id, ".", 2),
+        loadWorkspaceAudit(workspace.id)
+      ]);
+      if (patchApplyRequestRef.current !== requestId || workspaceFilePathRef.current !== applyPath) return;
+      const nextFile = filePayload.file;
+      const hasSensitiveContent = maskSensitiveText(nextFile.content) !== nextFile.content;
+      setWorkspaceFile(nextFile);
+      setPatchDraft(hasSensitiveContent ? "" : nextFile.content);
+      setPatchPreview(null);
+      setPatchPreviewDraft(null);
+      setPatchPreviewError(hasSensitiveContent ? "检测到疑似敏感内容，修改草稿已禁用。" : null);
+      setWorkspaceTree(treePayload.root);
+      setWorkspaceAudit(auditPayload.audit);
+      setPatchApplyMessage(applied.changed ? "修改已应用，文件已刷新。" : "内容没有变化，文件已刷新。");
+    } catch (error) {
+      if (patchApplyRequestRef.current !== requestId || workspaceFilePathRef.current !== applyPath) return;
+      setPatchPreview(null);
+      setPatchPreviewDraft(null);
+      setPatchPreviewError(maskWorkspaceError(error, "应用修改失败"));
+      setPatchApplyMessage(null);
+    } finally {
+      if (patchApplyRequestRef.current === requestId) {
+        setPatchApplyLoading(false);
+      }
     }
   }
 
@@ -590,7 +680,19 @@ export function App() {
               <div className="patch-preview">
                 <div className="file-preview-title">
                   <strong>修改草稿</strong>
-                  <span>{patchPreviewLoading ? "预览中" : patchPreview ? (patchPreview.changed ? "待审批" : "无变化") : "未预览"}</span>
+                  <span>
+                    {patchApplyLoading
+                      ? "应用中"
+                      : patchPreviewLoading
+                        ? "预览中"
+                        : patchApplyMessage
+                          ? "已应用"
+                          : patchPreview
+                            ? patchPreview.changed
+                              ? "待审批"
+                              : "无变化"
+                            : "未预览"}
+                  </span>
                 </div>
                 {workspaceFile ? (
                   <>
@@ -600,22 +702,43 @@ export function App() {
                       onChange={(event) => {
                         setPatchDraft(event.target.value);
                         setPatchPreview(null);
+                        setPatchPreviewDraft(null);
                         setPatchPreviewError(null);
+                        setPatchApplyMessage(null);
                       }}
-                      disabled={workspaceFileHasSensitiveContent || workspaceLoading || patchPreviewLoading}
+                      disabled={workspaceFileHasSensitiveContent || workspaceLoading || patchPreviewLoading || patchApplyLoading}
                       placeholder={workspaceFileHasSensitiveContent ? "疑似敏感内容，暂不进入修改草稿。" : "在这里编辑文件内容后预览 diff。"}
                     />
                     <div className="patch-actions">
                       <button
                         type="button"
                         onClick={() => void runPatchPreview()}
-                        disabled={!workspace || workspaceLoading || patchPreviewLoading || workspaceFileHasSensitiveContent}
+                        disabled={!workspace || workspaceLoading || patchPreviewLoading || patchApplyLoading || workspaceFileHasSensitiveContent}
                       >
                         <Code2 size={14} />
                         预览修改
                       </button>
+                      {patchPreview?.changed ? (
+                        <button
+                          className="apply-button"
+                          type="button"
+                          onClick={() => void runPatchApply()}
+                          disabled={!patchCanApply}
+                          title={
+                            patchPreview.truncated
+                              ? "预览已截断，不能应用。"
+                              : patchPreviewMatchesDraft
+                                ? "应用已预览的修改"
+                                : "草稿已变化，请重新预览。"
+                          }
+                        >
+                          <CheckCircle2 size={14} />
+                          {patchApplyLoading ? "应用中" : "应用修改"}
+                        </button>
+                      ) : null}
                       {patchPreview ? <span>{patchPreview.updatedSize} bytes</span> : null}
                     </div>
+                    {patchApplyMessage ? <p className="empty">{patchApplyMessage}</p> : null}
                     {patchPreviewError ? (
                       <div className="workspace-error">
                         <TriangleAlert size={15} />
