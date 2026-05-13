@@ -27,6 +27,18 @@ async function readErrorMessage(response: Response, fallback: string) {
   return structuredMessage || text || fallback;
 }
 
+function apiAuthHeaders() {
+  const token = globalThis.window?.__WEBCODE_API_TOKEN__?.trim();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+function jsonHeaders() {
+  return {
+    "Content-Type": "application/json",
+    ...apiAuthHeaders()
+  };
+}
+
 async function parseJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
     throw new Error(await readErrorMessage(response, `请求失败：${response.status}`));
@@ -47,32 +59,34 @@ function parseSseEvent(frame: string): RunStreamEvent | null {
 }
 
 export async function loadBootstrap() {
-  return parseJson<BootstrapPayload>(await fetch("/api/providers"));
+  return parseJson<BootstrapPayload>(await fetch("/api/providers", { headers: apiAuthHeaders() }));
 }
 
 export async function createRun(request: RunRequest) {
   return parseJson<RunResult>(
     await fetch("/api/runs", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: jsonHeaders(),
       body: JSON.stringify(request)
     })
   );
 }
 
 export async function loadRunHistory() {
-  return parseJson<RunHistoryPayload>(await fetch("/api/runs/history"));
+  return parseJson<RunHistoryPayload>(await fetch("/api/runs/history", { headers: apiAuthHeaders() }));
 }
 
 export async function loadRunHistoryDetail(runId: string) {
-  return parseJson<RunHistoryDetailPayload>(await fetch(`/api/runs/history/${encodeURIComponent(runId)}`));
+  return parseJson<RunHistoryDetailPayload>(
+    await fetch(`/api/runs/history/${encodeURIComponent(runId)}`, { headers: apiAuthHeaders() })
+  );
 }
 
 export async function previewRoute(request: Partial<RunRequest>) {
   return parseJson<RoutePreviewPayload>(
     await fetch("/api/routing/preview", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: jsonHeaders(),
       body: JSON.stringify(request)
     })
   );
@@ -85,7 +99,7 @@ export async function streamRun(
 ) {
   const response = await fetch("/api/runs/stream", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: jsonHeaders(),
     ...(signal ? { signal } : {}),
     body: JSON.stringify(request)
   });
@@ -147,14 +161,14 @@ export async function streamRun(
 }
 
 export async function loadWorkspaces() {
-  return parseJson<WorkspaceBootstrapPayload>(await fetch("/api/workspaces"));
+  return parseJson<WorkspaceBootstrapPayload>(await fetch("/api/workspaces", { headers: apiAuthHeaders() }));
 }
 
 export async function registerWorkspace(root: string, name?: string) {
   return parseJson<{ workspace: WorkspaceBootstrapPayload["workspaces"][number] }>(
     await fetch("/api/workspaces", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: jsonHeaders(),
       body: JSON.stringify({
         root,
         ...(name ? { name } : {})
@@ -165,24 +179,30 @@ export async function registerWorkspace(root: string, name?: string) {
 
 export async function loadWorkspaceTree(workspaceId: string, path = ".", depth = 2) {
   const query = new URLSearchParams({ path, depth: String(depth) });
-  return parseJson<WorkspaceTreePayload>(await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/tree?${query}`));
+  return parseJson<WorkspaceTreePayload>(
+    await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/tree?${query}`, { headers: apiAuthHeaders() })
+  );
 }
 
 export async function readWorkspaceFile(workspaceId: string, path: string) {
   const query = new URLSearchParams({ path });
-  return parseJson<WorkspaceFilePayload>(await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/files?${query}`));
+  return parseJson<WorkspaceFilePayload>(
+    await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/files?${query}`, { headers: apiAuthHeaders() })
+  );
 }
 
 export async function searchWorkspace(workspaceId: string, queryText: string, limit = 20) {
   const query = new URLSearchParams({ query: queryText, limit: String(limit) });
-  return parseJson<WorkspaceSearchPayload>(await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/search?${query}`));
+  return parseJson<WorkspaceSearchPayload>(
+    await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/search?${query}`, { headers: apiAuthHeaders() })
+  );
 }
 
 export async function previewWorkspacePatch(workspaceId: string, path: string, newContent: string) {
   return parseJson<WorkspacePatchPreviewPayload>(
     await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/patches/preview`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: jsonHeaders(),
       body: JSON.stringify({ path, newContent })
     })
   );
@@ -198,7 +218,7 @@ export async function applyWorkspacePatch(
   return parseJson<WorkspacePatchApplyPayload>(
     await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/patches/apply`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: jsonHeaders(),
       body: JSON.stringify({ path, newContent, expectedHash, expectedPreviewToken })
     })
   );
@@ -208,7 +228,7 @@ export async function previewWorkspaceShell(workspaceId: string, command: string
   return parseJson<WorkspaceShellPreviewPayload>(
     await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/shell/preview`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: jsonHeaders(),
       body: JSON.stringify({ command, cwd })
     })
   );
@@ -218,12 +238,14 @@ export async function runWorkspaceShell(workspaceId: string, command: string, cw
   return parseJson<WorkspaceShellRunPayload>(
     await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/shell`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: jsonHeaders(),
       body: JSON.stringify({ command, cwd, timeoutMs })
     })
   );
 }
 
 export async function loadWorkspaceAudit(workspaceId: string) {
-  return parseJson<WorkspaceAuditPayload>(await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/audit`));
+  return parseJson<WorkspaceAuditPayload>(
+    await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/audit`, { headers: apiAuthHeaders() })
+  );
 }

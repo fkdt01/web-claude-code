@@ -5,12 +5,15 @@
 ## 安全边界
 
 - workspace 必须先注册。
+- 后端默认只监听 `127.0.0.1`；如果配置公网监听地址，必须设置 `API_AUTH_TOKEN`，否则服务会拒绝启动。
+- 除 `/api/health` 外，启用 `API_AUTH_TOKEN` 后所有 `/api/*` 都必须携带 `Authorization: Bearer ...` 或 `X-Webcode-Token`。
+- `WEB_ORIGIN` 是浏览器 CORS 白名单，未配置时只允许本地 Vite 开发源，不再默认放开任意 Origin。
 - 注册目录必须位于允许根目录之下。
 - 默认允许根目录会向上寻找当前仓库根；生产环境建议显式设置 `WORKSPACE_ALLOWED_ROOTS`。
 - 所有文件路径必须是 workspace 内的相对路径。
 - 服务端会用 `realpath` 检查符号链接和 `../` 逃逸。
 - 默认跳过 `.git`、`node_modules`、`dist`、`.logs`、`.vite`。
-- `.env`、`.env.local` 等敏感配置文件不会出现在树/搜索中，也不能直接读取。
+- `.env`、`.env.*`、`.npmrc`、私钥、token/secret/password 命名文件和常见凭据目录不会出现在树/搜索中，也不能直接读取。
 - 单文件读取限制为 256 KB；二进制文件不会作为文本返回。
 - 搜索会限制文件大小、扫描数量和返回结果数量。
 - shell API 不使用 shell 解释器，不支持管道、重定向或命令拼接。
@@ -112,3 +115,17 @@
 ```
 
 后续接入前端时，UI 应优先依赖 `error.code` 做本地化展示。
+
+## 认证配置
+
+本地开发可以保持默认配置：API 只监听 `127.0.0.1`，前端通过 Vite proxy 访问。
+
+如果需要把 API 暴露到非本机地址，必须设置：
+
+```bash
+HOST=0.0.0.0
+WEB_ORIGIN=https://your-web-domain.example
+API_AUTH_TOKEN=replace-with-a-long-random-token
+```
+
+前端不会把 token 写入长期浏览器存储。生产部署建议让同源反向代理注入 `Authorization` 或 `X-Webcode-Token` 请求头；临时调试时也可以在页面加载前注入 `window.__WEBCODE_API_TOKEN__`。

@@ -20,7 +20,27 @@ import type {
 import { classifyShellCommand } from "@webcode/core";
 
 const DEFAULT_EXCLUDED_NAMES = new Set([".git", "node_modules", "dist", ".logs", ".vite"]);
-const SENSITIVE_FILE_NAMES = new Set([".env", ".env.local", ".env.production", ".env.development"]);
+const SENSITIVE_DIRECTORY_NAMES = new Set([".aws", ".azure", ".gnupg", ".kube", ".ssh"]);
+const SENSITIVE_FILE_NAMES = new Set([
+  ".env",
+  ".env.local",
+  ".env.production",
+  ".env.development",
+  ".npmrc",
+  ".pypirc",
+  ".netrc",
+  "credentials",
+  "id_dsa",
+  "id_ecdsa",
+  "id_ed25519",
+  "id_rsa"
+]);
+const SENSITIVE_FILE_PATTERNS = [
+  /^\.env\..+/i,
+  /\.(?:key|pem|p12|pfx)$/i,
+  /(?:^|[-_.])(api[_-]?key|secret|token|password|passwd|credential)s?(?:[-_.]|$)/i
+];
+const SENSITIVE_PATH_PATTERNS = [/^\.config\/gcloud(?:\/|$)/i];
 const MAX_READ_BYTES = 256 * 1024;
 const MAX_PATCH_PREVIEW_BYTES = MAX_READ_BYTES;
 const MAX_PATCH_APPLY_BYTES = MAX_READ_BYTES;
@@ -117,6 +137,35 @@ const isPathLikeInputSafe = (input: string) => {
   if (path.isAbsolute(input)) return false;
   return true;
 };
+
+function isSensitiveFileName(fileName: string) {
+  const normalized = fileName.toLowerCase();
+  if (normalized === ".env.example") return false;
+  return SENSITIVE_FILE_NAMES.has(normalized) || SENSITIVE_FILE_PATTERNS.some((pattern) => pattern.test(fileName));
+}
+
+function isSensitiveDirectoryName(directoryName: string) {
+  return SENSITIVE_DIRECTORY_NAMES.has(directoryName.toLowerCase());
+}
+
+function hasSensitivePathSegment(root: string, target: string) {
+  const relative = path.relative(root, target);
+  const portableRelative = relative.split(path.sep).join("/");
+  return (
+    SENSITIVE_PATH_PATTERNS.some((pattern) => pattern.test(portableRelative)) ||
+    relative
+      .split(path.sep)
+      .filter(Boolean)
+      .some((segment) => isSensitiveDirectoryName(segment))
+  );
+}
+
+function shouldHideDirectoryEntry(entry: { name: string; isDirectory(): boolean; isFile(): boolean }) {
+  if (DEFAULT_EXCLUDED_NAMES.has(entry.name)) return true;
+  if (entry.isDirectory() && isSensitiveDirectoryName(entry.name)) return true;
+  if (entry.isFile() && isSensitiveFileName(entry.name)) return true;
+  return false;
+}
 
 const clampInteger = (value: number, min: number, max: number) => Math.min(max, Math.max(min, Math.floor(value)));
 const contentHash = (content: string) => createHash("sha256").update(content, "utf8").digest("hex");
@@ -988,7 +1037,10 @@ export class WorkspaceService {
     if (expected === "file" && !stat.isFile()) {
       throw new WorkspaceError("path_not_file", "Path must point to a file.");
     }
-    if (expected === "file" && SENSITIVE_FILE_NAMES.has(path.basename(realPath))) {
+    if (
+      hasSensitivePathSegment(workspace.root, realPath) ||
+      (expected === "file" && isSensitiveFileName(path.basename(realPath)))
+    ) {
       throw new WorkspaceError("sensitive_file_not_readable", "Sensitive files cannot be read through the workspace API.", 403);
     }
     if (expected === "directory" && !stat.isDirectory()) {
@@ -1027,8 +1079,9 @@ export class WorkspaceService {
       return left.name.localeCompare(right.name);
     })) {
       if (counter.value >= MAX_TREE_ENTRIES) break;
-      if (DEFAULT_EXCLUDED_NAMES.has(entry.name) || SENSITIVE_FILE_NAMES.has(entry.name)) continue;
-      children.push(await this.buildTree(workspace, path.join(entryPath, entry.name), depth - 1, counter));
+      const childPath = path.join(entryPath, entry.name);
+      if (shouldHideDirectoryEntry(entry) || hasSensitivePathSegment(workspace.root, childPath)) continue;
+      children.push(await this.buildTree(workspace, childPath, depth - 1, counter));
     }
 
     return { ...base, children };
@@ -1064,8 +1117,8 @@ export class WorkspaceService {
       }
 
       for (const entry of entries) {
-        if (DEFAULT_EXCLUDED_NAMES.has(entry.name) || SENSITIVE_FILE_NAMES.has(entry.name)) continue;
         const entryPath = path.join(directory, entry.name);
+        if (shouldHideDirectoryEntry(entry) || hasSensitivePathSegment(root, entryPath)) continue;
         if (entry.isSymbolicLink()) continue;
         if (entry.isDirectory()) {
           stack.push(entryPath);

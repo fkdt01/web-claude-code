@@ -1,6 +1,6 @@
 # Linux 后端部署
 
-后端按 Linux 环境优先设计：所有配置走环境变量，服务监听 `0.0.0.0:${PORT}`，默认端口为 `8787`。
+后端按 Linux 环境优先设计：所有配置走环境变量，默认监听 `127.0.0.1:${PORT}`，默认端口为 `8787`；公网监听必须显式配置 `HOST` 和 `API_AUTH_TOKEN`。
 
 ## Docker 方式
 
@@ -15,10 +15,19 @@ docker run --rm -p 8787:8787 --env-file .env web-claude-code-server
 
 ```bash
 PORT=8787
+HOST=127.0.0.1
 WEB_ORIGIN=http://localhost:5173
 ```
 
 没有模型密钥时，服务仍会启用 mock provider，方便先验证 UI 和编排流程。
+
+如果容器端口要暴露给局域网或公网，必须设置 API token 和明确 CORS 白名单：
+
+```bash
+HOST=0.0.0.0
+WEB_ORIGIN=https://your-web-domain.example
+API_AUTH_TOKEN=replace-with-a-long-random-token
+```
 
 ## systemd 方式
 
@@ -36,8 +45,9 @@ sudo systemctl enable --now web-claude-code
 
 ```bash
 PORT=8787
-HOST=0.0.0.0
+HOST=127.0.0.1
 WEB_ORIGIN=https://your-web-domain.example
+API_AUTH_TOKEN=replace-with-a-long-random-token
 ANTHROPIC_API_KEY=
 OPENAI_API_KEY=
 OPENROUTER_API_KEY=

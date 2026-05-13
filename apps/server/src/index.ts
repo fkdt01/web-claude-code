@@ -12,10 +12,16 @@ import type {
 import { classifyShellCommand, defaultToolSpecs } from "@webcode/core";
 import { orchestrateRun, previewRoute, providerPayload, streamRun } from "./orchestrator.js";
 import { createProviderRegistry } from "./providers.js";
+import {
+  buildServerSecurityConfig,
+  isApiRequestAuthorized,
+  isCorsOriginAllowed
+} from "./security.js";
 import { createWorkspaceService, WorkspaceError } from "./workspaces.js";
 
+const securityConfig = buildServerSecurityConfig();
 const port = Number(process.env.PORT ?? 8787);
-const host = process.env.HOST ?? "0.0.0.0";
+const host = securityConfig.host;
 const patchPreviewBodyLimit = 1024 * 1024;
 const maxOutputTokensLimit = 200_000;
 const orchestrationModes = ["single", "race", "committee", "specialist"] as const satisfies readonly OrchestrationMode[];
@@ -33,7 +39,24 @@ const app = Fastify({
 });
 
 await app.register(cors, {
-  origin: process.env.WEB_ORIGIN ?? true
+  origin: (origin, callback) => {
+    callback(null, isCorsOriginAllowed(origin, securityConfig.corsOrigins));
+  }
+});
+
+app.addHook("preHandler", async (request, reply) => {
+  if (!securityConfig.apiAuthToken) return;
+  if (request.method === "OPTIONS") return;
+  if (!request.url.startsWith("/api/")) return;
+  if (request.url === "/api/health") return;
+  if (isApiRequestAuthorized(request.headers, securityConfig.apiAuthToken)) return;
+
+  return reply.code(401).send({
+    error: {
+      code: "api_auth_required",
+      message: "A valid API token is required."
+    }
+  });
 });
 
 type WorkspaceParams = {

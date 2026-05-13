@@ -17,6 +17,12 @@ import type {
   WorkspaceTreeEntry
 } from "@webcode/core";
 
+declare global {
+  interface Window {
+    __WEBCODE_API_TOKEN__?: string;
+  }
+}
+
 export type ProviderPayload = {
   id: string;
   displayName: string;
